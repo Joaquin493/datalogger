@@ -23,6 +23,11 @@ tags = load_tags()
 
 threading.Thread(target=start_logger, daemon=True).start()
 
+import os
+if os.environ.get("RAILWAY_ENVIRONMENT"):
+    from modbus_simulator import start_simulator
+    threading.Thread(target=start_simulator, daemon=True).start()
+
 @app.get("/")
 def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})

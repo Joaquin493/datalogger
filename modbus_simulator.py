@@ -20,7 +20,10 @@ def random_changes():
         print("SIM SIGNAL", address, "=", new)
         time.sleep(random.uniform(1, 3))
 
-if __name__ == "__main__":
+def start_simulator():
     threading.Thread(target=random_changes, daemon=True).start()
     print("MODBUS SIMULATOR RUNNING ON PORT 502")
     StartTcpServer(context=context, address=("0.0.0.0", 502))
+
+if __name__ == "__main__":
+    start_simulator()
