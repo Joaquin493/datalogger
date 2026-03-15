@@ -2,8 +2,8 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
+<title>DATALOGGER</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
-<title>PLC · DATALOGGER</title>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -12,7 +12,7 @@
 <header>
   <div class="logo">
     <div class="logo-dot"></div>
-    PLC · DATALOGGER
+    DATALOGGER
   </div>
   <div class="header-right">
     <div id="clock"></div>
@@ -53,19 +53,19 @@
   <div class="events-toolbar">
     <div class="search-box">
       <span class="search-icon">⌕</span>
-      <input type="text" id="ev-search" placeholder="Buscar tag, dirección, descripción..." oninput="applyEvFilters()">
+      <input type="text" id="ev-search" placeholder="Buscar tag, dirección, descripción..." oninput="evPage=1;applyEvFilters()">
     </div>
-    <select class="select-filter" id="ev-state" onchange="applyEvFilters()">
+    <select class="select-filter" id="ev-state" onchange="evPage=1;applyEvFilters()">
       <option value="">Estado: Todos</option>
       <option value="ON">Solo ON</option>
       <option value="OFF">Solo OFF</option>
     </select>
-    <select class="select-filter" id="ev-tag" onchange="applyEvFilters()">
+    <select class="select-filter" id="ev-tag" onchange="evPage=1;applyEvFilters()">
       <option value="">Tag: Todos</option>
     </select>
     <input type="datetime-local" class="date-input" id="date-from" title="Desde">
     <input type="datetime-local" class="date-input" id="date-to" title="Hasta">
-    <button class="btn" onclick="loadEvents()">Filtrar</button>
+    <button class="btn" onclick="evPage=1;loadEvents()">Filtrar</button>
     <button class="btn" onclick="clearDateFilter()">✕ Fecha</button>
     <div class="spacer"></div>
     <label style="font-family:var(--mono);font-size:12px;color:var(--text2);display:flex;align-items:center;gap:6px;">

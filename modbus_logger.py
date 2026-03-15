@@ -10,7 +10,7 @@ logging.getLogger("pymodbus").setLevel(logging.WARNING)
 PLC_IP = "127.0.0.1"
 PLC_PORT = 502
 TOTAL_SIGNALS = 200
-MAX_EVENTS = 100000
+MAX_EVENTS = 1000000
 
 tags = load_tags()
 

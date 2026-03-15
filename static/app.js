@@ -119,7 +119,6 @@ function applyEvFilters() {
       (e.timestamp||'').toLowerCase().includes(q)
     return matchState && matchTag && matchQ
   })
-  evPage = 1
   renderEventsTable()
 }
 
@@ -134,6 +133,7 @@ function sortBy(col) {
     if (col === 'id') { av = +av; bv = +bv }
     return av < bv ? sortDir : av > bv ? -sortDir : 0
   })
+  evPage = 1
   applyEvFilters()
 }
 
@@ -201,26 +201,30 @@ function clearFilters() {
   document.getElementById('ev-search').value = ''
   document.getElementById('ev-state').value  = ''
   document.getElementById('ev-tag').value    = ''
+  evPage = 1
   applyEvFilters()
 }
 
 function clearDateFilter() {
   document.getElementById('date-from').value = ''
   document.getElementById('date-to').value   = ''
+  evPage = 1
   loadEvents()
 }
 
 async function loadEvents() {
   try {
-    const pageSize = parseInt(document.getElementById('page-size').value)
-    const from     = document.getElementById('date-from').value
-    const to       = document.getElementById('date-to').value
+    const savedPage = evPage
+    const pageSize  = parseInt(document.getElementById('page-size').value)
+    const from      = document.getElementById('date-from').value
+    const to        = document.getElementById('date-to').value
     let url = '/events?limit=' + pageSize * 10
     if (from) url += '&date_from=' + encodeURIComponent(from)
     if (to)   url += '&date_to='   + encodeURIComponent(to)
     const res = await fetch(url)
     allEvents = await res.json()
     populateTagFilter()
+    evPage = savedPage
     applyEvFilters()
   } catch(e) { console.error('events:', e) }
 }

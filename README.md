@@ -107,7 +107,7 @@ Desde el header se puede exportar todos los eventos a un archivo `.xlsx`.
 
 ## Base de datos
 
-Los eventos se almacenan en `events.db` (SQLite). El sistema aplica un comportamiento **FIFO** con un límite de 100.000 registros — cuando se supera ese límite, los eventos más antiguos se eliminan automáticamente.
+Los eventos se almacenan en `events.db` (SQLite). El sistema aplica un comportamiento **FIFO** con un límite de 1.000.000 registros(200-300MB) — cuando se supera ese límite, los eventos más antiguos se eliminan automáticamente.
 
 ---
 
