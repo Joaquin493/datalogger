@@ -218,7 +218,9 @@ async function loadEvents() {
     const pageSize  = parseInt(document.getElementById('page-size').value)
     const from      = document.getElementById('date-from').value
     const to        = document.getElementById('date-to').value
-    let url = '/events?limit=' + pageSize * 10
+    const tag       = document.getElementById('ev-tag').value
+    let url = '/events?limit=5000'
+    if (tag)  url += '&tag='       + encodeURIComponent(tag)
     if (from) url += '&date_from=' + encodeURIComponent(from)
     if (to)   url += '&date_to='   + encodeURIComponent(to)
     const res = await fetch(url)
@@ -228,7 +230,6 @@ async function loadEvents() {
     applyEvFilters()
   } catch(e) { console.error('events:', e) }
 }
-
 // ── CONTADORES ──
 async function loadCounts() {
   try {

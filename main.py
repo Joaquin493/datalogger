@@ -56,12 +56,15 @@ def get_event_counts():
     return [dict(row) for row in rows]
 
 @app.get("/events")
-def get_events(limit: int = 100, date_from: str = "", date_to: str = ""):
+def get_events(limit: int = 100, date_from: str = "", date_to: str = "", tag: str = ""):
     conn = sqlite3.connect("events.db")
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
     query  = "SELECT * FROM events WHERE 1=1"
     params = []
+    if tag:
+        query += " AND tag=?"
+        params.append(tag)
     if date_from:
         query += " AND timestamp >= ?"
         params.append(date_from)
@@ -69,7 +72,7 @@ def get_events(limit: int = 100, date_from: str = "", date_to: str = ""):
         query += " AND timestamp <= ?"
         params.append(date_to)
     query += " ORDER BY id DESC LIMIT ?"
-    params.append(min(limit, 1000))
+    params.append(1000000 if tag else min(limit, 1000))
     cursor.execute(query, params)
     rows = cursor.fetchall()
     conn.close()
