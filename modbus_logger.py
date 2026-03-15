@@ -3,6 +3,9 @@ import time
 from datetime import datetime
 from pymodbus.client import ModbusTcpClient
 from tag_loader import load_tags
+import logging
+
+logging.getLogger("pymodbus").setLevel(logging.WARNING)
 
 PLC_IP = "127.0.0.1"
 PLC_PORT = 502
@@ -11,6 +14,14 @@ MAX_EVENTS = 100000
 
 tags = load_tags()
 
+# estado de conexión global accesible desde main.py
+connection_status = {
+    "connected": False,
+    "last_connected": None,
+    "last_error": None,
+    "retries": 0
+}
+
 def init_db():
     conn = sqlite3.connect("events.db")
     cursor = conn.cursor()
@@ -18,6 +29,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS events(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tag TEXT,
+            address TEXT,
             state TEXT,
             description TEXT,
             timestamp TEXT
@@ -43,13 +55,13 @@ def enforce_fifo():
     conn.commit()
     conn.close()
 
-def save_event(tag, state, description):
+def save_event(tag, address, state, description):
     conn = sqlite3.connect("events.db")
     cursor = conn.cursor()
     timestamp = datetime.now().strftime("%d:%m:%y / %H:%M:%S")
     cursor.execute(
-        "INSERT INTO events(tag,state,description,timestamp) VALUES (?,?,?,?)",
-        (tag, state, description, timestamp)
+        "INSERT INTO events(tag,address,state,description,timestamp) VALUES (?,?,?,?,?)",
+        (tag, address, state, description, timestamp)
     )
     conn.commit()
     conn.close()
@@ -66,31 +78,56 @@ def read_all_coils(client):
     return values
 
 def start_logger():
+    global connection_status
     print("LOGGER STARTED")
     init_db()
 
     client = ModbusTcpClient(PLC_IP, port=PLC_PORT)
-    client.connect()
     previous_values = [False] * TOTAL_SIGNALS
+    retry_delay = 2  # segundos, crece con backoff
 
     while True:
         try:
+            if not client.is_socket_open():
+                print(f"Conectando a {PLC_IP}:{PLC_PORT}...")
+                connected = client.connect()
+                if not connected:
+                    raise Exception("No se pudo conectar")
+                print("Conexión establecida")
+                retry_delay = 2  # reset backoff al conectar
+
             values = read_all_coils(client)
+
+            # conexión exitosa
+            connection_status["connected"]      = True
+            connection_status["last_connected"] = datetime.now().strftime("%d:%m:%y / %H:%M:%S")
+            connection_status["last_error"]     = None
+            connection_status["retries"]        = 0
+            retry_delay = 2
 
             for i in range(TOTAL_SIGNALS):
                 current = bool(values[i])
                 if current != previous_values[i]:
-                    tag = tags[i]["tag"] if i < len(tags) else f"TAG_{i}"
+                    tag         = tags[i]["tag"]         if i < len(tags) else f"TAG_{i}"
                     description = tags[i]["description"] if i < len(tags) else f"Digital Input {i}"
-                    state = "ON" if current else "OFF"
-                    save_event(tag, state, description)
-                    print("EVENT:", tag, state)
+                    address     = tags[i]["address"]     if i < len(tags) else f"%I{i//16}.{i%16}"
+                    state       = "ON" if current else "OFF"
+                    save_event(tag, address, state, description)
+                    print("EVENT:", tag, address, state)
                 previous_values[i] = current
 
         except Exception as e:
-            print("LOGGER ERROR:", e)
-            client.close()
-            time.sleep(2)
-            client.connect()
+            connection_status["connected"]  = False
+            connection_status["last_error"] = str(e)
+            connection_status["retries"]   += 1
+            print(f"LOGGER ERROR (reintento {connection_status['retries']} en {retry_delay}s): {e}")
+            try:
+                client.close()
+            except:
+                pass
+            time.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)  # backoff: 2s, 4s, 8s... máx 60s
+            client = ModbusTcpClient(PLC_IP, port=PLC_PORT)
+            continue
 
         time.sleep(0.5)

@@ -2,516 +2,58 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>Planta</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+<title>PLC · DATALOGGER</title>
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
-<style>
-
-* { box-sizing: border-box; margin: 0; padding: 0; }
-
-:root {
-  --bg:       #0a0d12;
-  --bg2:      #0f1318;
-  --bg3:      #161b23;
-  --border:   #1e2730;
-  --border2:  #2a3540;
-  --accent:   #00d4ff;
-  --accent2:  #0097b8;
-  --on:       #00ff88;
-  --on-glow:  #00ff8840;
-  --off:      #1a2030;
-  --off-text: #3a4a5a;
-  --text:     #c8d8e8;
-  --text2:    #6a8a9a;
-  --warn:     #ffaa00;
-  --danger:   #ff4444;
-  --mono:     'Share Tech Mono', monospace;
-  --sans:     'Rajdhani', sans-serif;
-}
-
-body {
-  font-family: var(--sans);
-  background: var(--bg);
-  color: var(--text);
-  min-height: 100vh;
-  overflow-x: hidden;
-}
-
-/* ── HEADER ── */
-header {
-  background: var(--bg2);
-  border-bottom: 1px solid var(--border);
-  padding: 0 24px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: 56px;
-  position: sticky;
-  top: 0;
-  z-index: 100;
-}
-
-.logo {
-  font-family: var(--mono);
-  font-size: 14px;
-  color: var(--accent);
-  letter-spacing: 3px;
-  text-transform: uppercase;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.logo-dot {
-  width: 8px; height: 8px;
-  background: var(--on);
-  border-radius: 50%;
-  box-shadow: 0 0 8px var(--on);
-  animation: pulse 2s infinite;
-}
-
-@keyframes pulse {
-  0%,100% { opacity: 1; }
-  50%      { opacity: 0.4; }
-}
-
-.header-right {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-#clock {
-  font-family: var(--mono);
-  font-size: 13px;
-  color: var(--text2);
-  letter-spacing: 1px;
-}
-
-/* ── TABS ── */
-.tabs {
-  display: flex;
-  gap: 2px;
-  padding: 16px 24px 0;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg2);
-}
-
-.tab {
-  font-family: var(--sans);
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-  color: var(--text2);
-  padding: 10px 20px;
-  cursor: pointer;
-  border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: 4px 4px 0 0;
-  background: transparent;
-  transition: all 0.2s;
-  position: relative;
-  bottom: -1px;
-}
-
-.tab:hover { color: var(--text); background: var(--bg3); }
-
-.tab.active {
-  color: var(--accent);
-  background: var(--bg);
-  border-color: var(--border);
-  border-bottom-color: var(--bg);
-}
-
-/* ── PANELS ── */
-.panel { display: none; padding: 20px 24px; }
-.panel.active { display: block; }
-
-/* ── TOOLBAR ── */
-.toolbar {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-  margin-bottom: 16px;
-}
-
-.search-box {
-  position: relative;
-  flex: 1;
-  min-width: 200px;
-  max-width: 360px;
-}
-
-.search-box input {
-  width: 100%;
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 13px;
-  padding: 8px 12px 8px 36px;
-  border-radius: 4px;
-  outline: none;
-  transition: border-color 0.2s;
-}
-
-.search-box input:focus { border-color: var(--accent2); }
-.search-box input::placeholder { color: var(--text2); }
-
-.search-icon {
-  position: absolute;
-  left: 11px; top: 50%;
-  transform: translateY(-50%);
-  color: var(--text2);
-  font-size: 14px;
-  pointer-events: none;
-}
-
-.filter-btn {
-  font-family: var(--sans);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  padding: 8px 14px;
-  border-radius: 4px;
-  border: 1px solid var(--border);
-  background: var(--bg3);
-  color: var(--text2);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.filter-btn:hover { border-color: var(--border2); color: var(--text); }
-.filter-btn.active-on  { border-color: var(--on); color: var(--on); background: #00ff8812; }
-.filter-btn.active-off { border-color: var(--accent); color: var(--accent); background: #00d4ff12; }
-
-.spacer { flex: 1; }
-
-.btn {
-  font-family: var(--sans);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-  padding: 8px 16px;
-  border-radius: 4px;
-  border: 1px solid var(--accent2);
-  background: transparent;
-  color: var(--accent);
-  cursor: pointer;
-  transition: all 0.15s;
-  white-space: nowrap;
-}
-
-.btn:hover { background: var(--accent2); color: var(--bg); }
-
-/* ── SIGNAL GRID ── */
-.grid-stats {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--text2);
-  margin-bottom: 12px;
-  display: flex;
-  gap: 20px;
-}
-
-.grid-stats span { color: var(--text); }
-.stat-on  { color: var(--on) !important; }
-.stat-off { color: var(--text2) !important; }
-
-.signal-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
-  gap: 6px;
-}
-
-.signal-card {
-  background: var(--off);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 8px 10px;
-  cursor: default;
-  transition: all 0.2s;
-  min-height: 62px;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-}
-
-.signal-card.ON {
-  background: #001a0d;
-  border-color: #00aa55;
-  box-shadow: 0 0 10px #00ff8820;
-}
-
-.signal-card:hover { border-color: var(--border2); transform: translateY(-1px); }
-.signal-card.ON:hover { box-shadow: 0 0 16px #00ff8830; }
-
-.sig-addr {
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--text2);
-  letter-spacing: 0.5px;
-}
-
-.signal-card.ON .sig-addr { color: #00aa55; }
-
-.sig-tag {
-  font-family: var(--sans);
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--off-text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  letter-spacing: 0.5px;
-}
-
-.signal-card.ON .sig-tag { color: var(--on); }
-
-.sig-state {
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: bold;
-  color: var(--off-text);
-  letter-spacing: 2px;
-}
-
-.signal-card.ON .sig-state { color: var(--on); }
-
-/* ── EVENTS TABLE ── */
-.events-toolbar {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  flex-wrap: wrap;
-  margin-bottom: 16px;
-}
-
-.select-filter {
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 12px;
-  padding: 8px 12px;
-  border-radius: 4px;
-  outline: none;
-  cursor: pointer;
-}
-
-.select-filter:focus { border-color: var(--accent2); }
-
-.table-wrap {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-
-thead tr {
-  background: var(--bg3);
-  border-bottom: 1px solid var(--border);
-}
-
-th {
-  font-family: var(--sans);
-  font-weight: 700;
-  font-size: 11px;
-  letter-spacing: 1.5px;
-  text-transform: uppercase;
-  color: var(--text2);
-  padding: 10px 14px;
-  text-align: left;
-  white-space: nowrap;
-  cursor: pointer;
-  user-select: none;
-  transition: color 0.15s;
-}
-
-th:hover { color: var(--accent); }
-th.sorted { color: var(--accent); }
-
-th .sort-arrow { margin-left: 4px; opacity: 0.5; font-size: 10px; }
-th.sorted .sort-arrow { opacity: 1; }
-
-tbody tr {
-  border-bottom: 1px solid var(--border);
-  transition: background 0.1s;
-}
-
-tbody tr:last-child { border-bottom: none; }
-tbody tr:hover { background: var(--bg3); }
-
-td {
-  padding: 9px 14px;
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--text);
-}
-
-td.tag-cell {
-  font-family: var(--sans);
-  font-weight: 600;
-  font-size: 13px;
-  letter-spacing: 0.5px;
-}
-
-.badge {
-  display: inline-block;
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: bold;
-  letter-spacing: 2px;
-  padding: 3px 8px;
-  border-radius: 3px;
-}
-
-.badge-ON  { background: #00ff8820; color: var(--on);  border: 1px solid #00ff8840; }
-.badge-OFF { background: #ffffff08; color: var(--text2); border: 1px solid var(--border); }
-
-td.desc-cell {
-  font-family: var(--sans);
-  font-size: 12px;
-  color: var(--text2);
-  max-width: 280px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* ── PAGINATION ── */
-.pagination {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 0 4px;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.page-info {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--text2);
-}
-
-.page-info span { color: var(--text); }
-
-.page-controls {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.page-btn {
-  font-family: var(--mono);
-  font-size: 12px;
-  min-width: 32px;
-  height: 30px;
-  padding: 0 8px;
-  border-radius: 3px;
-  border: 1px solid var(--border);
-  background: var(--bg3);
-  color: var(--text2);
-  cursor: pointer;
-  transition: all 0.15s;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.page-btn:hover:not(:disabled) { border-color: var(--accent2); color: var(--accent); }
-.page-btn.active { border-color: var(--accent); color: var(--accent); background: #00d4ff15; }
-.page-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-.page-btn.arrow { font-size: 14px; }
-
-.page-size-select {
-  background: var(--bg3);
-  border: 1px solid var(--border);
-  color: var(--text2);
-  font-family: var(--mono);
-  font-size: 12px;
-  padding: 4px 8px;
-  border-radius: 3px;
-  outline: none;
-  cursor: pointer;
-  height: 30px;
-}
-
-.empty-state {
-  text-align: center;
-  padding: 40px;
-  font-family: var(--mono);
-  font-size: 13px;
-  color: var(--text2);
-  letter-spacing: 1px;
-}
-
-/* ── SCROLLBAR ── */
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: var(--bg2); }
-::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: #3a4f5f; }
-
-</style>
+<link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
 <header>
   <div class="logo">
     <div class="logo-dot"></div>
-    Planta
+    PLC · DATALOGGER
   </div>
   <div class="header-right">
     <div id="clock"></div>
+    <div id="plc-status" class="connecting">◌ CONECTANDO...</div>
     <button class="btn" onclick="exportXLS()">↓ Exportar XLS</button>
   </div>
 </header>
 
 <div class="tabs">
-  <button class="tab active" onclick="switchTab('signals', this)">Panel de Señales</button>
-  <button class="tab" onclick="switchTab('events', this)">Registro de Eventos</button>
+  <button class="tab active" onclick="switchTab('signals',this)">Panel de Señales</button>
+  <button class="tab" onclick="switchTab('events',this)">Registro de Eventos</button>
+  <button class="tab" onclick="switchTab('counts',this)">Contadores</button>
 </div>
 
-<!-- ══ SEÑALES ══ -->
+<!-- SEÑALES -->
 <div id="panel-signals" class="panel active">
-
   <div class="toolbar">
     <div class="search-box">
       <span class="search-icon">⌕</span>
       <input type="text" id="sig-search" placeholder="Buscar tag o descripción..." oninput="renderSignals()">
     </div>
-    <button class="filter-btn" id="btn-all"  onclick="setSignalFilter('all')">Todas</button>
-    <button class="filter-btn active-on"  id="btn-on"   onclick="setSignalFilter('on')">ON</button>
-    <button class="filter-btn" id="btn-off"  onclick="setSignalFilter('off')">OFF</button>
+    <button class="filter-btn" id="btn-all" onclick="setSignalFilter('all')">Todas</button>
+    <button class="filter-btn active-on" id="btn-on" onclick="setSignalFilter('on')">ON</button>
+    <button class="filter-btn" id="btn-off" onclick="setSignalFilter('off')">OFF</button>
     <div class="spacer"></div>
   </div>
-
   <div class="grid-stats">
     Total: <span id="stat-total">—</span> &nbsp;|&nbsp;
     <span class="stat-on">ON: <span id="stat-on">—</span></span> &nbsp;|&nbsp;
     <span class="stat-off">OFF: <span id="stat-off">—</span></span> &nbsp;|&nbsp;
     Mostrando: <span id="stat-visible">—</span>
   </div>
-
   <div class="signal-grid" id="signal-grid"></div>
 </div>
 
-<!-- ══ EVENTOS ══ -->
+<!-- EVENTOS -->
 <div id="panel-events" class="panel">
-
   <div class="events-toolbar">
     <div class="search-box">
       <span class="search-icon">⌕</span>
-      <input type="text" id="ev-search" placeholder="Buscar tag, descripción..." oninput="applyEvFilters()">
+      <input type="text" id="ev-search" placeholder="Buscar tag, dirección, descripción..." oninput="applyEvFilters()">
     </div>
     <select class="select-filter" id="ev-state" onchange="applyEvFilters()">
       <option value="">Estado: Todos</option>
@@ -521,6 +63,10 @@ td.desc-cell {
     <select class="select-filter" id="ev-tag" onchange="applyEvFilters()">
       <option value="">Tag: Todos</option>
     </select>
+    <input type="datetime-local" class="date-input" id="date-from" title="Desde">
+    <input type="datetime-local" class="date-input" id="date-to" title="Hasta">
+    <button class="btn" onclick="loadEvents()">Filtrar</button>
+    <button class="btn" onclick="clearDateFilter()">✕ Fecha</button>
     <div class="spacer"></div>
     <label style="font-family:var(--mono);font-size:12px;color:var(--text2);display:flex;align-items:center;gap:6px;">
       Filas:
@@ -528,16 +74,18 @@ td.desc-cell {
         <option value="25">25</option>
         <option value="50" selected>50</option>
         <option value="100">100</option>
+        <option value="200">200</option>
+        <option value="500">500</option>
       </select>
     </label>
     <button class="btn" onclick="clearFilters()">✕ Limpiar</button>
   </div>
-
   <div class="table-wrap">
     <table>
       <thead>
         <tr>
           <th onclick="sortBy('id')"># <span class="sort-arrow" id="sort-id">↕</span></th>
+          <th onclick="sortBy('address')">Dirección <span class="sort-arrow" id="sort-address">↕</span></th>
           <th onclick="sortBy('tag')">Tag <span class="sort-arrow" id="sort-tag">↕</span></th>
           <th onclick="sortBy('state')">Estado <span class="sort-arrow" id="sort-state">↕</span></th>
           <th>Descripción</th>
@@ -548,7 +96,6 @@ td.desc-cell {
     </table>
     <div id="ev-empty" class="empty-state" style="display:none">Sin resultados</div>
   </div>
-
   <div class="pagination">
     <div class="page-info">
       Mostrando <span id="pg-from">—</span>–<span id="pg-to">—</span>
@@ -556,246 +103,37 @@ td.desc-cell {
     </div>
     <div class="page-controls" id="page-controls"></div>
   </div>
-
 </div>
 
-<script>
-
-// ── STATE ──
-let allSignals   = []
-let allEvents    = []
-let filteredEvs  = []
-let sigFilter    = 'on'
-let evPage       = 1
-let evPageSize   = 50
-let sortCol      = 'id'
-let sortDir      = -1   // -1 = desc
-
-// ── CLOCK ──
-function updateClock() {
-  const now = new Date()
-  document.getElementById('clock').textContent =
-    now.toLocaleDateString('es-AR') + '  ' +
-    now.toTimeString().slice(0,8)
-}
-setInterval(updateClock, 1000)
-updateClock()
-
-// ── TABS ──
-function switchTab(name, el) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'))
-  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'))
-  el.classList.add('active')
-  document.getElementById('panel-' + name).classList.add('active')
-}
-
-// ════════════════════════════════════════
-// SIGNALS
-// ════════════════════════════════════════
-
-function setSignalFilter(f) {
-  sigFilter = f
-  document.getElementById('btn-all').className = 'filter-btn' + (f==='all' ? ' active-off' : '')
-  document.getElementById('btn-on').className  = 'filter-btn' + (f==='on'  ? ' active-on'  : '')
-  document.getElementById('btn-off').className = 'filter-btn' + (f==='off' ? ' active-off' : '')
-  renderSignals()
-}
-
-function renderSignals() {
-  const q = document.getElementById('sig-search').value.toLowerCase()
-  const grid = document.getElementById('signal-grid')
-
-  const onCount  = allSignals.filter(s => s.state === 'ON').length
-  const offCount = allSignals.length - onCount
-  document.getElementById('stat-total').textContent = allSignals.length
-  document.getElementById('stat-on').textContent    = onCount
-  document.getElementById('stat-off').textContent   = offCount
-
-  let filtered = allSignals.filter(s => {
-    const matchFilter =
-      sigFilter === 'all' ||
-      (sigFilter === 'on'  && s.state === 'ON') ||
-      (sigFilter === 'off' && s.state !== 'ON')
-    const matchSearch = !q ||
-      s.tag.toLowerCase().includes(q) ||
-      s.description.toLowerCase().includes(q) ||
-      s.address.toLowerCase().includes(q)
-    return matchFilter && matchSearch
-  })
-
-  document.getElementById('stat-visible').textContent = filtered.length
-
-  if (filtered.length === 0) {
-    grid.innerHTML = '<div class="empty-state">Sin señales</div>'
-    return
-  }
-
-  grid.innerHTML = filtered.map(s => `
-    <div class="signal-card ${s.state}" title="${s.description}">
-      <div class="sig-addr">${s.address}</div>
-      <div class="sig-tag">${s.tag}</div>
-      <div class="sig-state">${s.state}</div>
+<!-- CONTADORES -->
+<div id="panel-counts" class="panel">
+  <div class="toolbar">
+    <div class="search-box">
+      <span class="search-icon">⌕</span>
+      <input type="text" id="cnt-search" placeholder="Buscar tag o descripción..." oninput="renderCounts()">
     </div>
-  `).join('')
-}
+    <div class="spacer"></div>
+    <button class="btn" onclick="loadCounts()">↺ Actualizar</button>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th onclick="sortCounts('tag')">Tag <span class="sort-arrow" id="csort-tag">↕</span></th>
+          <th onclick="sortCounts('total')">Total <span class="sort-arrow" id="csort-total">↓</span></th>
+          <th onclick="sortCounts('total_on')">ON <span class="sort-arrow" id="csort-total_on">↕</span></th>
+          <th onclick="sortCounts('total_off')">OFF <span class="sort-arrow" id="csort-total_off">↕</span></th>
+          <th title="Porcentaje de actividad relativo al tag con más eventos registrados">Distribución ⓘ</th>
+          <th onclick="sortCounts('last_event')">Último evento <span class="sort-arrow" id="csort-last_event">↕</span></th>
+          <th>Descripción</th>
+        </tr>
+      </thead>
+      <tbody id="counts-body"></tbody>
+    </table>
+    <div id="cnt-empty" class="empty-state" style="display:none">Sin datos aún</div>
+  </div>
+</div>
 
-async function loadSignals() {
-  try {
-    const res  = await fetch('/signals')
-    allSignals = await res.json()
-    renderSignals()
-  } catch(e) { console.error('signals:', e) }
-}
-
-// ════════════════════════════════════════
-// EVENTS
-// ════════════════════════════════════════
-
-function populateTagFilter() {
-  const tags = [...new Set(allEvents.map(e => e.tag))].sort()
-  const sel  = document.getElementById('ev-tag')
-  const cur  = sel.value
-  sel.innerHTML = '<option value="">Tag: Todos</option>' +
-    tags.map(t => `<option value="${t}" ${t===cur?'selected':''}>${t}</option>`).join('')
-}
-
-function applyEvFilters() {
-  const q     = document.getElementById('ev-search').value.toLowerCase()
-  const state = document.getElementById('ev-state').value
-  const tag   = document.getElementById('ev-tag').value
-
-  filteredEvs = allEvents.filter(e => {
-    const matchState = !state || e.state === state
-    const matchTag   = !tag   || e.tag === tag
-    const matchQ     = !q ||
-      e.tag.toLowerCase().includes(q) ||
-      (e.description||'').toLowerCase().includes(q) ||
-      (e.timestamp||'').toLowerCase().includes(q)
-    return matchState && matchTag && matchQ
-  })
-
-  evPage = 1
-  renderEventsTable()
-}
-
-function sortBy(col) {
-  if (sortCol === col) sortDir = -sortDir
-  else { sortCol = col; sortDir = -1 }
-
-  document.querySelectorAll('th .sort-arrow').forEach(a => a.textContent = '↕')
-  const arr = document.getElementById('sort-' + col)
-  if (arr) arr.textContent = sortDir === -1 ? '↓' : '↑'
-
-  document.querySelectorAll('th').forEach(th => th.classList.remove('sorted'))
-  document.querySelectorAll('th').forEach(th => {
-    if (th.textContent.toLowerCase().includes(col.slice(0,3))) th.classList.add('sorted')
-  })
-
-  allEvents.sort((a, b) => {
-    let av = a[col], bv = b[col]
-    if (col === 'id') { av = +av; bv = +bv }
-    return av < bv ? sortDir : av > bv ? -sortDir : 0
-  })
-
-  applyEvFilters()
-}
-
-function renderEventsTable() {
-  const total  = filteredEvs.length
-  const pages  = Math.max(1, Math.ceil(total / evPageSize))
-  evPage       = Math.min(evPage, pages)
-  const from   = (evPage - 1) * evPageSize
-  const to     = Math.min(from + evPageSize, total)
-  const slice  = filteredEvs.slice(from, to)
-
-  document.getElementById('pg-from').textContent  = total ? from + 1 : 0
-  document.getElementById('pg-to').textContent    = to
-  document.getElementById('pg-total').textContent = total
-
-  const tbody = document.getElementById('events-body')
-  const empty = document.getElementById('ev-empty')
-
-  if (slice.length === 0) {
-    tbody.innerHTML = ''
-    empty.style.display = 'block'
-  } else {
-    empty.style.display = 'none'
-    tbody.innerHTML = slice.map(e => `
-      <tr>
-        <td>${e.id}</td>
-        <td class="tag-cell">${e.tag}</td>
-        <td><span class="badge badge-${e.state}">${e.state}</span></td>
-        <td class="desc-cell" title="${e.description||''}">${e.description||'—'}</td>
-        <td>${e.timestamp||'—'}</td>
-      </tr>
-    `).join('')
-  }
-
-  renderPagination(pages)
-}
-
-function renderPagination(pages) {
-  const ctrl = document.getElementById('page-controls')
-  const btns = []
-
-  btns.push(`<button class="page-btn arrow" onclick="goPage(${evPage-1})" ${evPage<=1?'disabled':''}>‹</button>`)
-
-  const range = []
-  for (let i = 1; i <= pages; i++) {
-    if (i === 1 || i === pages || (i >= evPage - 2 && i <= evPage + 2)) range.push(i)
-    else if (range[range.length-1] !== '…') range.push('…')
-  }
-
-  range.forEach(p => {
-    if (p === '…') {
-      btns.push(`<span style="color:var(--text2);padding:0 4px;font-family:var(--mono);font-size:12px">…</span>`)
-    } else {
-      btns.push(`<button class="page-btn ${p===evPage?'active':''}" onclick="goPage(${p})">${p}</button>`)
-    }
-  })
-
-  btns.push(`<button class="page-btn arrow" onclick="goPage(${evPage+1})" ${evPage>=pages?'disabled':''}>›</button>`)
-
-  ctrl.innerHTML = btns.join('')
-}
-
-function goPage(p) {
-  const pages = Math.max(1, Math.ceil(filteredEvs.length / evPageSize))
-  if (p < 1 || p > pages) return
-  evPage = p
-  renderEventsTable()
-}
-
-function changePageSize() {
-  evPageSize = +document.getElementById('page-size').value
-  evPage = 1
-  renderEventsTable()
-}
-
-function clearFilters() {
-  document.getElementById('ev-search').value = ''
-  document.getElementById('ev-state').value  = ''
-  document.getElementById('ev-tag').value    = ''
-  applyEvFilters()
-}
-
-async function loadEvents() {
-  try {
-    const res = await fetch('/events')
-    allEvents = await res.json()
-    populateTagFilter()
-    applyEvFilters()
-  } catch(e) { console.error('events:', e) }
-}
-
-function exportXLS() { window.open('/export') }
-
-// ── INIT & REFRESH ──
-loadSignals()
-loadEvents()
-setInterval(loadSignals, 2000)
-setInterval(loadEvents,  5000)
-
-</script>
+<script src="/static/app.js"></script>
 </body>
 </html>
