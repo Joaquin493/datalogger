@@ -1,0 +1,13 @@
+# Base de datos (no subir datos reales)
+events.db
+events_export.xlsx
+
+# Excel con tags (opcional — subir si es público)
+# Programa_TTA_IRSA_convertido.xlsx
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
