@@ -8,6 +8,7 @@ import pandas as pd
 import threading
 import logging
 from datetime import datetime
+import os
 
 from modbus_logger import start_logger, connection_status
 from tag_loader import load_tags
@@ -23,7 +24,6 @@ tags = load_tags()
 
 threading.Thread(target=start_logger, daemon=True).start()
 
-import os
 if os.environ.get("RAILWAY_ENVIRONMENT"):
     from modbus_simulator import start_simulator
     threading.Thread(target=start_simulator, daemon=True).start()
@@ -56,7 +56,7 @@ def get_event_counts():
     return [dict(row) for row in rows]
 
 @app.get("/events")
-def get_events(limit: int = 100, date_from: str = "", date_to: str = "", tag: str = ""):
+def get_events(limit: int = 100, date_from: str = "", date_to: str = "", tag: str = "", search: str = ""):
     conn = sqlite3.connect("events.db")
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -65,14 +65,27 @@ def get_events(limit: int = 100, date_from: str = "", date_to: str = "", tag: st
     if tag:
         query += " AND tag=?"
         params.append(tag)
+    if search:
+        query += " AND (tag LIKE ? OR address LIKE ? OR description LIKE ? OR timestamp LIKE ?)"
+        s = f"%{search}%"
+        params.extend([s, s, s, s])
     if date_from:
-        query += " AND timestamp >= ?"
-        params.append(date_from)
+        try:
+            dt = datetime.strptime(date_from, "%Y-%m-%dT%H:%M")
+            query += " AND timestamp >= ?"
+            params.append(dt.strftime("%Y-%m-%d %H:%M:%S"))
+        except:
+            pass
     if date_to:
-        query += " AND timestamp <= ?"
-        params.append(date_to)
+        try:
+            dt = datetime.strptime(date_to, "%Y-%m-%dT%H:%M")
+            query += " AND timestamp <= ?"
+            params.append(dt.strftime("%Y-%m-%d %H:%M:%S"))
+        except:
+            pass
+    has_filter = tag or search or date_from or date_to
     query += " ORDER BY id DESC LIMIT ?"
-    params.append(1000000 if tag else min(limit, 1000))
+    params.append(1000000 if has_filter else min(limit, 1000))
     cursor.execute(query, params)
     rows = cursor.fetchall()
     conn.close()
@@ -100,9 +113,33 @@ def get_signals():
     return signals
 
 @app.get("/export")
-def export_events():
+def export_events(tag: str = "", search: str = "", date_from: str = "", date_to: str = ""):
     conn = sqlite3.connect("events.db")
-    df = pd.read_sql_query("SELECT id, tag, address, state, description, timestamp FROM events", conn)
+    query  = "SELECT id, tag, address, state, description, timestamp FROM events WHERE 1=1"
+    params = []
+    if tag:
+        query += " AND tag=?"
+        params.append(tag)
+    if search:
+        query += " AND (tag LIKE ? OR address LIKE ? OR description LIKE ? OR timestamp LIKE ?)"
+        s = f"%{search}%"
+        params.extend([s, s, s, s])
+    if date_from:
+        try:
+            dt = datetime.strptime(date_from, "%Y-%m-%dT%H:%M")
+            query += " AND timestamp >= ?"
+            params.append(dt.strftime("%Y-%m-%d %H:%M:%S"))
+        except:
+            pass
+    if date_to:
+        try:
+            dt = datetime.strptime(date_to, "%Y-%m-%dT%H:%M")
+            query += " AND timestamp <= ?"
+            params.append(dt.strftime("%Y-%m-%d %H:%M:%S"))
+        except:
+            pass
+    query += " ORDER BY id DESC"
+    df = pd.read_sql_query(query, conn, params=params)
     conn.close()
     file = "events_export.xlsx"
     df.to_excel(file, index=False)

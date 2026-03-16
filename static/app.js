@@ -1,14 +1,15 @@
-let allSignals  = []
-let allEvents   = []
-let filteredEvs = []
-let sigFilter   = 'on'
-let evPage      = 1
-let evPageSize  = 50
-let sortCol     = 'id'
-let sortDir     = -1
-let allCounts   = []
-let cSortCol    = 'total'
-let cSortDir    = -1
+let allSignals   = []
+let allEvents    = []
+let filteredEvs  = []
+let sigFilter    = 'on'
+let evPage       = 1
+let evPageSize   = 50
+let sortCol      = 'id'
+let sortDir      = -1
+let allCounts    = []
+let cSortCol     = 'total'
+let cSortDir     = -1
+let searchTimeout = null
 
 // ── CLOCK ──
 function updateClock() {
@@ -26,26 +27,35 @@ function switchTab(name, el) {
   el.classList.add('active')
   document.getElementById('panel-' + name).classList.add('active')
 }
-
 // ── STATUS ──
 async function loadStatus() {
   try {
+    const t0   = performance.now()
     const res  = await fetch('/status')
+    const ms   = Math.round(performance.now() - t0)
     const data = await res.json()
     const el   = document.getElementById('plc-status')
+    const lat  = document.getElementById('latency')
+
     if (data.connected) {
       el.className   = 'ok'
       el.textContent = '● PLC CONECTADO'
       el.title       = 'Última conexión: ' + data.last_connected
+      if (lat) { lat.textContent = ms + ' ms'; lat.style.color = 'var(--text2)' }
     } else if (data.retries > 0) {
       el.className   = 'error'
       el.textContent = '● DESCONECTADO (reintento ' + data.retries + ')'
       el.title       = data.last_error || ''
+      if (lat) { lat.textContent = '— ms'; lat.style.color = 'var(--danger)' }
     } else {
       el.className   = 'connecting'
       el.textContent = '◌ CONECTANDO...'
+      if (lat) { lat.textContent = '— ms'; lat.style.color = 'var(--warn)' }
     }
-  } catch(e) {}
+  } catch(e) {
+    const lat = document.getElementById('latency')
+    if (lat) { lat.textContent = '— ms'; lat.style.color = 'var(--danger)' }
+  }
 }
 
 // ── SIGNALS ──
@@ -58,8 +68,10 @@ function setSignalFilter(f) {
 }
 
 function renderSignals() {
-  const q       = document.getElementById('sig-search').value.toLowerCase()
-  const grid    = document.getElementById('signal-grid')
+  const sigSearch = document.getElementById('sig-search')
+  const q         = sigSearch ? sigSearch.value.toLowerCase() : ''
+  const grid      = document.getElementById('signal-grid')
+  if (!grid) return
   const onCount = allSignals.filter(s => s.state === 'ON').length
   document.getElementById('stat-total').textContent   = allSignals.length
   document.getElementById('stat-on').textContent      = onCount
@@ -100,25 +112,23 @@ async function loadSignals() {
 function populateTagFilter() {
   const tags = [...new Set(allEvents.map(e => e.tag))].sort()
   const sel  = document.getElementById('ev-tag')
+  if (!sel) return
   const cur  = sel.value
   sel.innerHTML = '<option value="">Tag: Todos</option>' +
     tags.map(t => `<option value="${t}" ${t===cur?'selected':''}>${t}</option>`).join('')
 }
 
+// búsqueda con debounce — espera 400ms después de escribir
+function onSearchInput() {
+  evPage = 1
+  clearTimeout(searchTimeout)
+  searchTimeout = setTimeout(() => loadEvents(), 400)
+}
+
+// filtro local solo para estado — la búsqueda y tag van al servidor
 function applyEvFilters() {
-  const q     = document.getElementById('ev-search').value.toLowerCase()
-  const state = document.getElementById('ev-state').value
-  const tag   = document.getElementById('ev-tag').value
-  filteredEvs = allEvents.filter(e => {
-    const matchState = !state || e.state === state
-    const matchTag   = !tag   || e.tag === tag
-    const matchQ     = !q ||
-      e.tag.toLowerCase().includes(q) ||
-      (e.address||'').toLowerCase().includes(q) ||
-      (e.description||'').toLowerCase().includes(q) ||
-      (e.timestamp||'').toLowerCase().includes(q)
-    return matchState && matchTag && matchQ
-  })
+  const state = document.getElementById('ev-state')?.value || ''
+  filteredEvs = allEvents.filter(e => !state || e.state === state)
   renderEventsTable()
 }
 
@@ -149,6 +159,7 @@ function renderEventsTable() {
   document.getElementById('pg-total').textContent = total
   const tbody = document.getElementById('events-body')
   const empty = document.getElementById('ev-empty')
+  if (!tbody) return
   if (slice.length === 0) {
     tbody.innerHTML = ''
     empty.style.display = 'block'
@@ -169,6 +180,7 @@ function renderEventsTable() {
 
 function renderPagination(pages) {
   const ctrl = document.getElementById('page-controls')
+  if (!ctrl) return
   const btns = []
   btns.push(`<button class="page-btn" onclick="goPage(${evPage-1})" ${evPage<=1?'disabled':''}>‹</button>`)
   const range = []
@@ -202,7 +214,7 @@ function clearFilters() {
   document.getElementById('ev-state').value  = ''
   document.getElementById('ev-tag').value    = ''
   evPage = 1
-  applyEvFilters()
+  loadEvents()
 }
 
 function clearDateFilter() {
@@ -219,10 +231,12 @@ async function loadEvents() {
     const from      = document.getElementById('date-from').value
     const to        = document.getElementById('date-to').value
     const tag       = document.getElementById('ev-tag').value
-    let url = '/events?limit=5000'
-    if (tag)  url += '&tag='       + encodeURIComponent(tag)
-    if (from) url += '&date_from=' + encodeURIComponent(from)
-    if (to)   url += '&date_to='   + encodeURIComponent(to)
+    const search    = document.getElementById('ev-search').value
+    let url = '/events?limit=' + pageSize * 10
+    if (tag)    url += '&tag='       + encodeURIComponent(tag)
+    if (search) url += '&search='    + encodeURIComponent(search)
+    if (from)   url += '&date_from=' + encodeURIComponent(from)
+    if (to)     url += '&date_to='   + encodeURIComponent(to)
     const res = await fetch(url)
     allEvents = await res.json()
     populateTagFilter()
@@ -230,6 +244,7 @@ async function loadEvents() {
     applyEvFilters()
   } catch(e) { console.error('events:', e) }
 }
+
 // ── CONTADORES ──
 async function loadCounts() {
   try {
@@ -249,9 +264,10 @@ function sortCounts(col) {
 }
 
 function renderCounts() {
-  const q      = document.getElementById('cnt-search').value.toLowerCase()
+  const q      = document.getElementById('cnt-search')?.value.toLowerCase() || ''
   const tbody  = document.getElementById('counts-body')
   const empty  = document.getElementById('cnt-empty')
+  if (!tbody) return
   const maxVal = Math.max(...allCounts.map(c => c.total), 1)
   let filtered = allCounts.filter(c =>
     !q || c.tag.toLowerCase().includes(q) || (c.description||'').toLowerCase().includes(q)
@@ -289,8 +305,31 @@ function renderCounts() {
   }).join('')
 }
 
-function exportXLS() { window.open('/export') }
+function exportXLS() {
+  const tag    = document.getElementById('ev-tag')?.value    || ''
+  const search = document.getElementById('ev-search')?.value || ''
+  const from   = document.getElementById('date-from')?.value || ''
+  const to     = document.getElementById('date-to')?.value   || ''
 
+  const hasFilter = tag || search || from || to
+
+  if (hasFilter) {
+    const filtros = []
+    if (tag)    filtros.push(`Tag: ${tag}`)
+    if (search) filtros.push(`Búsqueda: "${search}"`)
+    if (from)   filtros.push(`Desde: ${from}`)
+    if (to)     filtros.push(`Hasta: ${to}`)
+    const msg = `Se exportarán solo los eventos filtrados:\n${filtros.join('\n')}\n\n¿Continuar?`
+    if (!confirm(msg)) return
+  }
+
+  let url = '/export?x=1'
+  if (tag)    url += '&tag='       + encodeURIComponent(tag)
+  if (search) url += '&search='    + encodeURIComponent(search)
+  if (from)   url += '&date_from=' + encodeURIComponent(from)
+  if (to)     url += '&date_to='   + encodeURIComponent(to)
+  window.open(url)
+}
 // ── INIT ──
 loadSignals()
 loadEvents()
