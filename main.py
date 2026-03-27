@@ -30,8 +30,11 @@ if os.environ.get("RAILWAY_ENVIRONMENT"):
 
 @app.get("/")
 def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
-
+    return templates.TemplateResponse(
+        request=request, 
+        name="index.html", 
+        context={"request": request}
+    )
 @app.get("/status")
 def get_status():
     return connection_status
