@@ -51,7 +51,7 @@ async def login(request: Request):
         response = RedirectResponse("/", status_code=302)
         response.set_cookie("session", SESSION_TOKEN, httponly=True)
         return response
-    return templates.TemplateResponse("login.html", {"request": request, "error": "Usuario o contraseña incorrectos"})
+    return templates.TemplateResponse(request=request, name="login.html", context={"error": "Usuario o contraseña incorrectos"})
 
 @app.get("/logout")
 def logout():
@@ -63,7 +63,7 @@ def logout():
 def home(request: Request):
     if not check_session(request):
         return RedirectResponse("/login", status_code=302)
-    return templates.TemplateResponse("index.html", {"request": request})
+    return templates.TemplateResponse(request=request, name="index.html", context={})
 
 @app.get("/status")
 def get_status(request: Request):
