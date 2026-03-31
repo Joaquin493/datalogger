@@ -39,7 +39,8 @@ def check_session(request: Request):
 def login_page(request: Request):
     if check_session(request):
         return RedirectResponse("/", status_code=302)
-    return templates.TemplateResponse("login.html", {"request": request, "error": ""})
+    return templates.TemplateResponse(request=request, name="login.html", context={"error": ""}
+)
 
 @app.post("/login")
 async def login(request: Request):
