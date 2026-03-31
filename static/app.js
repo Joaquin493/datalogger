@@ -27,6 +27,7 @@ function switchTab(name, el) {
   el.classList.add('active')
   document.getElementById('panel-' + name).classList.add('active')
 }
+
 // ── STATUS ──
 async function loadStatus() {
   try {
@@ -36,7 +37,6 @@ async function loadStatus() {
     const data = await res.json()
     const el   = document.getElementById('plc-status')
     const lat  = document.getElementById('latency')
-
     if (data.connected) {
       el.className   = 'ok'
       el.textContent = '● PLC CONECTADO'
@@ -118,14 +118,12 @@ function populateTagFilter() {
     tags.map(t => `<option value="${t}" ${t===cur?'selected':''}>${t}</option>`).join('')
 }
 
-// búsqueda con debounce — espera 400ms después de escribir
 function onSearchInput() {
   evPage = 1
   clearTimeout(searchTimeout)
   searchTimeout = setTimeout(() => loadEvents(), 400)
 }
 
-// filtro local solo para estado — la búsqueda y tag van al servidor
 function applyEvFilters() {
   const state = document.getElementById('ev-state')?.value || ''
   filteredEvs = allEvents.filter(e => !state || e.state === state)
@@ -268,7 +266,6 @@ function renderCounts() {
   const tbody  = document.getElementById('counts-body')
   const empty  = document.getElementById('cnt-empty')
   if (!tbody) return
-  const maxVal = Math.max(...allCounts.map(c => c.total), 1)
   let filtered = allCounts.filter(c =>
     !q || c.tag.toLowerCase().includes(q) || (c.description||'').toLowerCase().includes(q)
   )
@@ -283,26 +280,15 @@ function renderCounts() {
     return
   }
   empty.style.display = 'none'
-  tbody.innerHTML = filtered.map(c => {
-    const pct = Math.round((c.total / maxVal) * 100)
-    return `
-      <tr>
-        <td class="tag-cell">${c.tag}</td>
-        <td><strong>${c.total}</strong></td>
-        <td style="color:var(--on)">${c.total_on}</td>
-        <td style="color:var(--text2)">${c.total_off}</td>
-        <td>
-          <div class="count-bar-wrap">
-            <div class="count-bar-bg">
-              <div class="count-bar-fill" style="width:${pct}%"></div>
-            </div>
-            <span style="font-family:var(--mono);font-size:10px;color:var(--text2);min-width:32px">${pct}%</span>
-          </div>
-        </td>
-        <td style="color:var(--text2);font-size:11px">${c.last_event||'—'}</td>
-        <td class="desc-cell" title="${c.description||''}">${c.description||'—'}</td>
-      </tr>`
-  }).join('')
+  tbody.innerHTML = filtered.map(c => `
+    <tr>
+      <td class="tag-cell">${c.tag}</td>
+      <td><strong>${c.total}</strong></td>
+      <td style="color:var(--on)">${c.total_on}</td>
+      <td style="color:var(--text2)">${c.total_off}</td>
+      <td style="color:var(--text2);font-size:11px">${c.last_event||'—'}</td>
+      <td class="desc-cell" title="${c.description||''}">${c.description||'—'}</td>
+    </tr>`).join('')
 }
 
 function exportXLS() {
@@ -310,9 +296,7 @@ function exportXLS() {
   const search = document.getElementById('ev-search')?.value || ''
   const from   = document.getElementById('date-from')?.value || ''
   const to     = document.getElementById('date-to')?.value   || ''
-
   const hasFilter = tag || search || from || to
-
   if (hasFilter) {
     const filtros = []
     if (tag)    filtros.push(`Tag: ${tag}`)
@@ -322,7 +306,6 @@ function exportXLS() {
     const msg = `Se exportarán solo los eventos filtrados:\n${filtros.join('\n')}\n\n¿Continuar?`
     if (!confirm(msg)) return
   }
-
   let url = '/export?x=1'
   if (tag)    url += '&tag='       + encodeURIComponent(tag)
   if (search) url += '&search='    + encodeURIComponent(search)
@@ -330,6 +313,7 @@ function exportXLS() {
   if (to)     url += '&date_to='   + encodeURIComponent(to)
   window.open(url)
 }
+
 // ── INIT ──
 loadSignals()
 loadEvents()

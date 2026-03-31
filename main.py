@@ -1,7 +1,6 @@
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Request, Response, Depends
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from fastapi.requests import Request
 from fastapi.staticfiles import StaticFiles
 import sqlite3
 import pandas as pd
@@ -9,6 +8,7 @@ import threading
 import logging
 from datetime import datetime
 import os
+import secrets
 
 from modbus_logger import start_logger, connection_status
 from tag_loader import load_tags
@@ -28,19 +28,52 @@ if os.environ.get("RAILWAY_ENVIRONMENT"):
     from modbus_simulator import start_simulator
     threading.Thread(target=start_simulator, daemon=True).start()
 
+# ── AUTH ──
+SESSION_TOKEN = secrets.token_hex(32)
+USERS = {"admin": "admin"}
+
+def check_session(request: Request):
+    return request.cookies.get("session") == SESSION_TOKEN
+
+@app.get("/login")
+def login_page(request: Request):
+    if check_session(request):
+        return RedirectResponse("/", status_code=302)
+    return templates.TemplateResponse("login.html", {"request": request, "error": ""})
+
+@app.post("/login")
+async def login(request: Request):
+    form = await request.form()
+    username = form.get("username", "")
+    password = form.get("password", "")
+    if USERS.get(username) == password:
+        response = RedirectResponse("/", status_code=302)
+        response.set_cookie("session", SESSION_TOKEN, httponly=True)
+        return response
+    return templates.TemplateResponse("login.html", {"request": request, "error": "Usuario o contraseña incorrectos"})
+
+@app.get("/logout")
+def logout():
+    response = RedirectResponse("/login", status_code=302)
+    response.delete_cookie("session")
+    return response
+
 @app.get("/")
 def home(request: Request):
-    return templates.TemplateResponse(
-        request=request, 
-        name="index.html", 
-        context={"request": request}
-    )
+    if not check_session(request):
+        return RedirectResponse("/login", status_code=302)
+    return templates.TemplateResponse("index.html", {"request": request})
+
 @app.get("/status")
-def get_status():
+def get_status(request: Request):
+    if not check_session(request):
+        return Response(status_code=401)
     return connection_status
 
 @app.get("/events/count")
-def get_event_counts():
+def get_event_counts(request: Request):
+    if not check_session(request):
+        return Response(status_code=401)
     conn = sqlite3.connect("events.db")
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -59,7 +92,9 @@ def get_event_counts():
     return [dict(row) for row in rows]
 
 @app.get("/events")
-def get_events(limit: int = 100, date_from: str = "", date_to: str = "", tag: str = "", search: str = ""):
+def get_events(request: Request, limit: int = 100, date_from: str = "", date_to: str = "", tag: str = "", search: str = ""):
+    if not check_session(request):
+        return Response(status_code=401)
     conn = sqlite3.connect("events.db")
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -95,7 +130,9 @@ def get_events(limit: int = 100, date_from: str = "", date_to: str = "", tag: st
     return [dict(row) for row in rows]
 
 @app.get("/signals")
-def get_signals():
+def get_signals(request: Request):
+    if not check_session(request):
+        return Response(status_code=401)
     conn = sqlite3.connect("events.db")
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -116,7 +153,9 @@ def get_signals():
     return signals
 
 @app.get("/export")
-def export_events(tag: str = "", search: str = "", date_from: str = "", date_to: str = ""):
+def export_events(request: Request, tag: str = "", search: str = "", date_from: str = "", date_to: str = ""):
+    if not check_session(request):
+        return Response(status_code=401)
     conn = sqlite3.connect("events.db")
     query  = "SELECT id, tag, address, state, description, timestamp FROM events WHERE 1=1"
     params = []

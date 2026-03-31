@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>DATALOGGER — Login</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-body">
+
+<div class="login-wrap">
+  <div class="login-card">
+
+    <div class="login-logo">
+      <div class="logo-dot"></div>
+      DATALOGGER
+    </div>
+
+    <div class="login-subtitle">Sistema de registro de eventos</div>
+
+    {% if error %}
+    <div class="login-error">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="/login">
+      <div class="login-field">
+        <label>Usuario</label>
+        <input type="text" name="username" autocomplete="username" autofocus>
+      </div>
+      <div class="login-field">
+        <label>Contraseña</label>
+        <input type="password" name="password" autocomplete="current-password">
+      </div>
+      <button type="submit" class="login-btn">Ingresar</button>
+    </form>
+
+  </div>
+</div>
+
+</body>
+</html>

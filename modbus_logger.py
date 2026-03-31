@@ -58,7 +58,7 @@ def enforce_fifo():
 def save_event(tag, address, state, description):
     conn = sqlite3.connect("events.db")
     cursor = conn.cursor()
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     cursor.execute(
         "INSERT INTO events(tag,address,state,description,timestamp) VALUES (?,?,?,?,?)",
         (tag, address, state, description, timestamp)

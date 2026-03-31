@@ -18,6 +18,7 @@
     <div id="clock"></div>
     <div id="latency" style="font-family:var(--mono);font-size:12px;color:var(--text2);letter-spacing:1px;" title="Latencia servidor"></div>
     <div id="plc-status" class="connecting">◌ CONECTANDO...</div>
+    <a href="/logout"><button class="btn-logout">⎋ Salir</button></a>
   </div>
 </header>
 
@@ -139,7 +140,6 @@
           <th onclick="sortCounts('total')">Total <span class="sort-arrow" id="csort-total">↓</span></th>
           <th onclick="sortCounts('total_on')">ON <span class="sort-arrow" id="csort-total_on">↕</span></th>
           <th onclick="sortCounts('total_off')">OFF <span class="sort-arrow" id="csort-total_off">↕</span></th>
-          <th title="Porcentaje de actividad relativo al tag con más eventos registrados">Distribución ⓘ</th>
           <th onclick="sortCounts('last_event')">Último evento <span class="sort-arrow" id="csort-last_event">↕</span></th>
           <th>Descripción</th>
         </tr>
