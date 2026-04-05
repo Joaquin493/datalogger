@@ -23,7 +23,7 @@ def random_changes():
 def start_simulator():
     threading.Thread(target=random_changes, daemon=True).start()
     print("MODBUS SIMULATOR RUNNING ON PORT 502")
-    StartTcpServer(context=context, address=("0.0.0.0", 502))
+    StartTcpServer(context=context, address=("0.0.0.0", 5020))
 
 if __name__ == "__main__":
     start_simulator()
