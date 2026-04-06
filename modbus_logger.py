@@ -7,20 +7,24 @@ import logging
 
 logging.getLogger("pymodbus").setLevel(logging.WARNING)
 
-PLC_IP = "127.0.0.1"
-PLC_PORT = 5020
+PLC_IP        = "127.0.0.1"
+PLC_PORT      = 5020
 TOTAL_SIGNALS = 200
-MAX_EVENTS = 1000000
+MAX_EVENTS    = 1000000
+DEVICE_ID     = 1    # cambiar a 255 para Schneider M340/M580
+START_ADDRESS = 0    # cambiar a 1 si el PLC lo requiere
+MIN_DELTA     = 0.1  # debounce en segundos
 
 tags = load_tags()
 
-# estado de conexión global accesible desde main.py
 connection_status = {
-    "connected": False,
+    "connected":      False,
     "last_connected": None,
-    "last_error": None,
-    "retries": 0
+    "last_error":     None,
+    "retries":        0
 }
+
+event_counter = 0
 
 def init_db():
     conn = sqlite3.connect("events.db")
@@ -56,6 +60,7 @@ def enforce_fifo():
     conn.close()
 
 def save_event(tag, address, state, description):
+    global event_counter
     conn = sqlite3.connect("events.db")
     cursor = conn.cursor()
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -65,13 +70,15 @@ def save_event(tag, address, state, description):
     )
     conn.commit()
     conn.close()
-    enforce_fifo()
+    event_counter += 1
+    if event_counter % 1000 == 0:
+        enforce_fifo()
 
 def read_all_coils(client):
     values = []
-    for address in range(0, TOTAL_SIGNALS, 8):
-        count = min(8, TOTAL_SIGNALS - address)
-        result = client.read_coils(address=address, count=count, device_id=1)
+    for address in range(START_ADDRESS, TOTAL_SIGNALS + START_ADDRESS, 8):
+        count = min(8, TOTAL_SIGNALS - (address - START_ADDRESS))
+        result = client.read_coils(address=address, count=count, device_id=DEVICE_ID)
         if not hasattr(result, 'bits'):
             raise Exception(f"Error en address {address}: {result}")
         values.extend(result.bits[:count])
@@ -83,31 +90,33 @@ def start_logger():
     init_db()
 
     client = ModbusTcpClient(PLC_IP, port=PLC_PORT)
-    previous_values = [False] * TOTAL_SIGNALS
-    retry_delay = 2  # segundos, crece con backoff
+    previous_values  = [False] * TOTAL_SIGNALS
+    last_change_time = [0.0]  * TOTAL_SIGNALS
+    retry_delay      = 2
 
     while True:
         try:
             if not client.is_socket_open():
                 print(f"Conectando a {PLC_IP}:{PLC_PORT}...")
-                connected = client.connect()
-                if not connected:
+                if not client.connect():
                     raise Exception("No se pudo conectar")
                 print("Conexión establecida")
-                retry_delay = 2  # reset backoff al conectar
+                retry_delay = 2
 
             values = read_all_coils(client)
 
-            # conexión exitosa
             connection_status["connected"]      = True
             connection_status["last_connected"] = datetime.now().strftime("%d:%m:%y / %H:%M:%S")
             connection_status["last_error"]     = None
             connection_status["retries"]        = 0
             retry_delay = 2
 
+            now = time.time()
+
             for i in range(TOTAL_SIGNALS):
                 current = bool(values[i])
-                if current != previous_values[i]:
+                if current != previous_values[i] and (now - last_change_time[i]) > MIN_DELTA:
+                    last_change_time[i] = now
                     tag         = tags[i]["tag"]         if i < len(tags) else f"TAG_{i}"
                     description = tags[i]["description"] if i < len(tags) else f"Digital Input {i}"
                     address     = tags[i]["address"]     if i < len(tags) else f"%I{i//16}.{i%16}"
@@ -126,7 +135,7 @@ def start_logger():
             except:
                 pass
             time.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, 60)  # backoff: 2s, 4s, 8s... máx 60s
+            retry_delay = min(retry_delay * 2, 60)
             client = ModbusTcpClient(PLC_IP, port=PLC_PORT)
             continue
 
