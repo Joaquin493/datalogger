@@ -92,7 +92,6 @@ def start_logger():
     client = ModbusTcpClient(PLC_IP, port=PLC_PORT)
     previous_values  = [False] * TOTAL_SIGNALS
     last_change_time = [0.0]  * TOTAL_SIGNALS
-    retry_delay      = 2
 
     while True:
         try:
@@ -101,7 +100,6 @@ def start_logger():
                 if not client.connect():
                     raise Exception("No se pudo conectar")
                 print("Conexión establecida")
-                retry_delay = 2
 
             values = read_all_coils(client)
 
@@ -109,7 +107,6 @@ def start_logger():
             connection_status["last_connected"] = datetime.now().strftime("%d:%m:%y / %H:%M:%S")
             connection_status["last_error"]     = None
             connection_status["retries"]        = 0
-            retry_delay = 2
 
             now = time.time()
 
@@ -129,13 +126,12 @@ def start_logger():
             connection_status["connected"]  = False
             connection_status["last_error"] = str(e)
             connection_status["retries"]   += 1
-            print(f"LOGGER ERROR (reintento {connection_status['retries']} en {retry_delay}s): {e}")
+            print(f"LOGGER ERROR (reintento {connection_status['retries']}): {e}")
             try:
                 client.close()
             except:
                 pass
-            time.sleep(retry_delay)
-            retry_delay = min(retry_delay * 2, 60)
+            time.sleep(1)
             client = ModbusTcpClient(PLC_IP, port=PLC_PORT)
             continue
 
