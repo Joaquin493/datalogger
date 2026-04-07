@@ -10,8 +10,7 @@ from datetime import datetime
 import os
 import secrets
 
-from modbus_logger import start_logger, connection_status
-from tag_loader import load_tags
+from modbus_logger import start_logger, connection_status, load_tags_safe
 
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
@@ -20,7 +19,7 @@ logging.getLogger("pymodbus").setLevel(logging.WARNING)
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
-tags = load_tags()
+tags = load_tags_safe()
 
 threading.Thread(target=start_logger, daemon=True).start()
 
@@ -30,7 +29,9 @@ if os.environ.get("RAILWAY_ENVIRONMENT"):
 
 # ── AUTH ──
 SESSION_TOKEN = secrets.token_hex(32)
-USERS = {"admin": "admin"}
+USERS = {
+    os.environ.get("APP_USER", "admin"): os.environ.get("APP_PASSWORD", "admin")
+}
 
 def check_session(request: Request):
     return request.cookies.get("session") == SESSION_TOKEN
@@ -49,7 +50,11 @@ async def login(request: Request):
     password = form.get("password", "")
     if USERS.get(username) == password:
         response = RedirectResponse("/", status_code=302)
-        response.set_cookie("session", SESSION_TOKEN, httponly=True)
+        response.set_cookie(
+            "session", SESSION_TOKEN,
+            httponly=True,
+            samesite="lax",
+        )
         return response
     return templates.TemplateResponse(request=request, name="login.html", context={"error": "Usuario o contraseña incorrectos"})
 
@@ -122,9 +127,9 @@ def get_events(request: Request, limit: int = 100, date_from: str = "", date_to:
             params.append(dt.strftime("%Y-%m-%d %H:%M:%S"))
         except:
             pass
-    has_filter = tag or search or date_from or date_to
     query += " ORDER BY id DESC LIMIT ?"
-    params.append(1000000 if has_filter else min(limit, 1000))
+    MAX_QUERY_LIMIT = 10_000
+    params.append(min(limit, MAX_QUERY_LIMIT))
     cursor.execute(query, params)
     rows = cursor.fetchall()
     conn.close()
@@ -137,21 +142,21 @@ def get_signals(request: Request):
     conn = sqlite3.connect("events.db")
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    signals = []
-    for t in tags:
-        cursor.execute(
-            "SELECT state FROM events WHERE tag=? ORDER BY id DESC LIMIT 1",
-            (t["tag"],)
-        )
-        row = cursor.fetchone()
-        signals.append({
+    cursor.execute("""
+        SELECT tag, state FROM events
+        WHERE id IN (SELECT MAX(id) FROM events GROUP BY tag)
+    """)
+    latest = {row["tag"]: row["state"] for row in cursor.fetchall()}
+    conn.close()
+    return [
+        {
             "tag":         t["tag"],
             "address":     t["address"],
             "description": t["description"],
-            "state":       row["state"] if row else "OFF"
-        })
-    conn.close()
-    return signals
+            "state":       latest.get(t["tag"], "OFF")
+        }
+        for t in tags
+    ]
 
 @app.get("/export")
 def export_events(request: Request, tag: str = "", search: str = "", date_from: str = "", date_to: str = ""):

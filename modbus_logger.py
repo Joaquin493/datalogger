@@ -63,10 +63,10 @@ MIN_DELTA      = 0.1       # Debounce en segundos
 POLL_INTERVAL  = 0.5       # Tiempo entre lecturas (segundos)
 
 # Parámetros del cliente Modbus (según docs oficiales)
-MODBUS_TIMEOUT       = 3     # segundos — socket timeout
-MODBUS_RETRIES       = 3     # reintentos automáticos por request fallido
-RECONNECT_DELAY_BASE = 1.0   # backoff inicial en segundos
-RECONNECT_DELAY_MAX  = 30.0  # backoff máximo en segundos
+MODBUS_TIMEOUT = 3     # segundos — socket timeout
+MODBUS_RETRIES = 3     # reintentos automáticos por request fallido
+BACKOFF_BASE   = 1.0   # backoff inicial en segundos
+BACKOFF_MAX    = 30.0  # backoff máximo en segundos
 
 # ---------------------------------------------------------------------------
 # ESTADO GLOBAL DE CONEXIÓN
@@ -112,10 +112,11 @@ def load_tags_safe():
 # BASE DE DATOS
 # ---------------------------------------------------------------------------
 
-def init_db():
+def init_db(conn):
     log_db.info("Inicializando base de datos SQLite (events.db)...")
     try:
-        conn = sqlite3.connect("events.db")
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         cursor = conn.cursor()
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS events(
@@ -135,17 +136,15 @@ def init_db():
 
         cursor.execute("SELECT COUNT(*) FROM events")
         total = cursor.fetchone()[0]
-        conn.close()
         log_db.info(f"DB lista — eventos existentes: {total:,} / {MAX_EVENTS:,}")
     except Exception as e:
         log_db.critical(f"Error al inicializar la DB: {e}", exc_info=True)
         raise
 
 
-def enforce_fifo():
+def enforce_fifo(conn):
     log_db.debug("Verificando límite FIFO...")
     try:
-        conn = sqlite3.connect("events.db")
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM events")
         total = cursor.fetchone()[0]
@@ -160,15 +159,13 @@ def enforce_fifo():
             log_db.info(f"FIFO: eliminados {to_delete:,} eventos antiguos (total era {total:,})")
         else:
             log_db.debug(f"FIFO OK — {total:,}/{MAX_EVENTS:,} eventos")
-        conn.close()
     except Exception as e:
         log_db.error(f"Error en enforce_fifo: {e}", exc_info=True)
 
 
-def save_event(tag, address, signal_type, state, description):
+def save_event(conn, tag, address, signal_type, state, description):
     global event_counter
     try:
-        conn = sqlite3.connect("events.db")
         cursor = conn.cursor()
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         cursor.execute(
@@ -176,13 +173,11 @@ def save_event(tag, address, signal_type, state, description):
             "VALUES (?, ?, ?, ?, ?, ?)",
             (tag, address, signal_type, state, description, timestamp)
         )
-        conn.commit()
-        conn.close()
         event_counter += 1
         log_db.debug(f"Evento #{event_counter} guardado: [{signal_type}] {tag} = {state}")
         if event_counter % 1000 == 0:
             log_db.info(f"Checkpoint: {event_counter:,} eventos guardados en esta sesión")
-            enforce_fifo()
+            enforce_fifo(conn)
     except Exception as e:
         log_db.error(f"Error al guardar evento ({tag}, {state}): {e}", exc_info=True)
 
@@ -193,8 +188,8 @@ def save_event(tag, address, signal_type, state, description):
 
 def build_client():
     """
-    Crea un ModbusTcpClient con los parámetros recomendados por la doc oficial.
-    IMPORTANTE: el cliente sincrónico NO reconecta automáticamente.
+    Crea un ModbusTcpClient con los parámetros recomendados.
+    El cliente sincrónico NO reconecta automáticamente.
     El backoff exponencial se maneja manualmente en el loop principal.
     """
     log_modbus.debug(
@@ -216,10 +211,8 @@ def build_client():
 
 def _check_result(result, label):
     """Verifica un resultado Modbus usando isError() (pymodbus >= 3.x)."""
-    if hasattr(result, 'isError') and result.isError():
+    if result.isError():
         raise Exception(f"Error Modbus en {label}: {result}")
-    if not hasattr(result, 'bits'):
-        raise Exception(f"Respuesta inválida en {label}: {result}")
 
 
 def read_discrete_inputs(client):
@@ -227,16 +220,12 @@ def read_discrete_inputs(client):
     Lee entradas digitales físicas — tabla 1x (%I).
     Función Modbus 0x02 (Read Discrete Inputs).
     """
-    values = []
     log_modbus.debug(f"Leyendo {TOTAL_INPUTS} Discrete Inputs desde addr {START_ADDRESS}...")
-    for address in range(START_ADDRESS, TOTAL_INPUTS + START_ADDRESS, 8):
-        count  = min(8, TOTAL_INPUTS - (address - START_ADDRESS))
-        result = client.read_discrete_inputs(
-            address=address, count=count, device_id=DEVICE_ID
-        )
-        _check_result(result, f"DI addr={address}")
-        values.extend(result.bits[:count])
-        log_modbus.debug(f"  DI addr={address} count={count} bits={result.bits[:count]}")
+    result = client.read_discrete_inputs(
+        address=START_ADDRESS, count=TOTAL_INPUTS, device_id=DEVICE_ID
+    )
+    _check_result(result, f"DI addr={START_ADDRESS} count={TOTAL_INPUTS}")
+    values = result.bits[:TOTAL_INPUTS]
     log_modbus.debug(f"Total Discrete Inputs leídos: {len(values)}")
     return values
 
@@ -246,16 +235,12 @@ def read_coils(client):
     Lee salidas digitales / coils — tabla 0x (%Q).
     Función Modbus 0x01 (Read Coils).
     """
-    values = []
     log_modbus.debug(f"Leyendo {TOTAL_OUTPUTS} Coils desde addr {START_ADDRESS}...")
-    for address in range(START_ADDRESS, TOTAL_OUTPUTS + START_ADDRESS, 8):
-        count  = min(8, TOTAL_OUTPUTS - (address - START_ADDRESS))
-        result = client.read_coils(
-            address=address, count=count, device_id=DEVICE_ID
-        )
-        _check_result(result, f"Coil addr={address}")
-        values.extend(result.bits[:count])
-        log_modbus.debug(f"  Coil addr={address} count={count} bits={result.bits[:count]}")
+    result = client.read_coils(
+        address=START_ADDRESS, count=TOTAL_OUTPUTS, device_id=DEVICE_ID
+    )
+    _check_result(result, f"Coil addr={START_ADDRESS} count={TOTAL_OUTPUTS}")
+    values = result.bits[:TOTAL_OUTPUTS]
     log_modbus.debug(f"Total Coils leídos: {len(values)}")
     return values
 
@@ -280,16 +265,24 @@ def start_logger():
     log.info(f"  Max events (DB):  {MAX_EVENTS:,}")
     log.info(f"  Timeout Modbus:   {MODBUS_TIMEOUT}s")
     log.info(f"  Retries Modbus:   {MODBUS_RETRIES}")
-    log.info(f"  Backoff base:     {RECONNECT_DELAY_BASE}s")
-    log.info(f"  Backoff max:      {RECONNECT_DELAY_MAX}s")
+    log.info(f"  Backoff base:     {BACKOFF_BASE}s")
+    log.info(f"  Backoff max:      {BACKOFF_MAX}s")
     log.info(f"  Log file:         {LOG_FILE}")
     log.info("=" * 60)
 
-    tags   = load_tags_safe()
-    init_db()
+    tags    = load_tags_safe()
+    db_conn = sqlite3.connect("events.db")
+    init_db(db_conn)
+    enforce_fifo(db_conn)
 
     client          = build_client()
-    reconnect_delay = RECONNECT_DELAY_BASE
+    reconnect_delay = BACKOFF_BASE
+
+    # Pre-computar arrays de tags para evitar dict lookups en el hot loop
+    tag_names        = [tags[i]["tag"]         if i < len(tags) else f"TAG_{i}"    for i in range(TOTAL_SIGNALS)]
+    tag_descriptions = [tags[i]["description"] if i < len(tags) else f"Signal {i}" for i in range(TOTAL_SIGNALS)]
+    tag_addresses    = [tags[i]["address"]     if i < len(tags) else f"addr_{i}"   for i in range(TOTAL_SIGNALS)]
+    signal_types     = ["INPUT" if i < TOTAL_INPUTS else "OUTPUT"                  for i in range(TOTAL_SIGNALS)]
 
     # Vector de estado anterior y timestamps de debounce
     # Índices 0..TOTAL_INPUTS-1             → Discrete Inputs (%I)
@@ -299,102 +292,93 @@ def start_logger():
 
     log.info("Entrando al loop de polling...")
 
-    while True:
-        try:
-            # ── Conexión ──────────────────────────────────────────────────
-            if not client.is_socket_open():
-                log.info(f"Socket cerrado — conectando a {PLC_IP}:{PLC_PORT}...")
-                if not client.connect():
-                    raise ConnectionError(
-                        f"client.connect() devolvió False para {PLC_IP}:{PLC_PORT}"
+    try:
+        while True:
+            try:
+                # ── Conexión ──────────────────────────────────────────
+                if not client.is_socket_open():
+                    log.info(f"Socket cerrado — conectando a {PLC_IP}:{PLC_PORT}...")
+                    if not client.connect():
+                        raise ConnectionError(
+                            f"client.connect() devolvió False para {PLC_IP}:{PLC_PORT}"
+                        )
+                    log.info(
+                        f"Conexión establecida con {PLC_IP}:{PLC_PORT} "
+                        f"(tras {connection_status['retries']} reintento(s))"
                     )
-                log.info(
-                    f"Conexión establecida con {PLC_IP}:{PLC_PORT} "
-                    f"(tras {connection_status['retries']} reintento(s))"
+                    reconnect_delay = BACKOFF_BASE
+
+                # ── Lecturas ──────────────────────────────────────────
+                t_start = time.perf_counter()
+                inputs  = read_discrete_inputs(client)
+                outputs = read_coils(client)
+                t_ms    = (time.perf_counter() - t_start) * 1000
+
+                values = inputs + outputs
+
+                connection_status["connected"]      = True
+                connection_status["last_connected"] = datetime.now().strftime("%d/%m/%y %H:%M:%S")
+                connection_status["last_error"]     = None
+                connection_status["retries"]        = 0
+
+                log_modbus.debug(f"Ciclo de lectura completo en {t_ms:.1f} ms")
+
+                # ── Detección de cambios ──────────────────────────────
+                now     = time.time()
+                changes = 0
+
+                for i in range(TOTAL_SIGNALS):
+                    current = bool(values[i])
+
+                    if current != previous_values[i] and (now - last_change_time[i]) > MIN_DELTA:
+                        last_change_time[i] = now
+                        previous_values[i]  = current
+
+                        state = "ON" if current else "OFF"
+
+                        save_event(db_conn, tag_names[i], tag_addresses[i], signal_types[i], state, tag_descriptions[i])
+                        log_events.info(
+                            f"[{signal_types[i]}] {tag_names[i]} | {tag_addresses[i]} | {state} | {tag_descriptions[i]}"
+                        )
+                        changes += 1
+
+                if changes:
+                    db_conn.commit()
+                    log.debug(f"{changes} cambio(s) detectado(s) en este ciclo")
+
+            except Exception as e:
+                connection_status["connected"]  = False
+                connection_status["last_error"] = str(e)
+                connection_status["retries"]   += 1
+                is_conn_error = isinstance(e, ConnectionError)
+                log.error(
+                    f"{'Conexión' if is_conn_error else 'Lectura'} error "
+                    f"(reintento #{connection_status['retries']}): {e} "
+                    f"— esperando {reconnect_delay:.1f}s",
+                    exc_info=not is_conn_error
                 )
-                reconnect_delay = RECONNECT_DELAY_BASE  # resetear backoff
+                try:
+                    client.close()
+                except Exception:
+                    pass
+                time.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, BACKOFF_MAX)
+                client = build_client()
+                continue
 
-            # ── Lecturas ──────────────────────────────────────────────────
-            t_start = time.perf_counter()
-            inputs  = read_discrete_inputs(client)   # TOTAL_INPUTS valores
-            outputs = read_coils(client)              # TOTAL_OUTPUTS valores
-            t_ms    = (time.perf_counter() - t_start) * 1000
+            time.sleep(POLL_INTERVAL)
 
-            values = inputs + outputs  # vector unificado de TOTAL_SIGNALS bool
-
-            # Actualizar estado global
-            connection_status["connected"]      = True
-            connection_status["last_connected"] = datetime.now().strftime("%d/%m/%y %H:%M:%S")
-            connection_status["last_error"]     = None
-            connection_status["retries"]        = 0
-
-            log_modbus.debug(f"Ciclo de lectura completo en {t_ms:.1f} ms")
-
-            # ── Detección de cambios ──────────────────────────────────────
-            now     = time.time()
-            changes = 0
-
-            for i in range(TOTAL_SIGNALS):
-                current = bool(values[i])
-
-                if current != previous_values[i] and (now - last_change_time[i]) > MIN_DELTA:
-                    last_change_time[i] = now
-
-                    tag         = tags[i]["tag"]         if i < len(tags) else f"TAG_{i}"
-                    description = tags[i]["description"] if i < len(tags) else f"Signal {i}"
-                    address     = tags[i]["address"]     if i < len(tags) else f"addr_{i}"
-                    signal_type = "INPUT" if i < TOTAL_INPUTS else "OUTPUT"
-                    state       = "ON" if current else "OFF"
-
-                    save_event(tag, address, signal_type, state, description)
-                    log_events.info(
-                        f"[{signal_type}] {tag} | {address} | {state} | {description}"
-                    )
-                    changes += 1
-
-                previous_values[i] = current
-
-            if changes:
-                log.debug(f"{changes} cambio(s) detectado(s) en este ciclo")
-
-        except ConnectionError as ce:
-            # Error de conexión — backoff exponencial
-            connection_status["connected"]  = False
-            connection_status["last_error"] = str(ce)
-            connection_status["retries"]   += 1
-            log.error(
-                f"Error de conexión (reintento #{connection_status['retries']}): {ce} "
-                f"— esperando {reconnect_delay:.1f}s antes de reintentar"
-            )
-            try:
-                client.close()
-            except Exception:
-                pass
-            time.sleep(reconnect_delay)
-            reconnect_delay = min(reconnect_delay * 2, RECONNECT_DELAY_MAX)
-            client = build_client()
-            continue
-
-        except Exception as e:
-            # Error de lectura Modbus (no necesariamente de conexión)
-            connection_status["connected"]  = False
-            connection_status["last_error"] = str(e)
-            connection_status["retries"]   += 1
-            log.error(
-                f"Error de lectura (reintento #{connection_status['retries']}): {e} "
-                f"— esperando {reconnect_delay:.1f}s",
-                exc_info=True
-            )
-            try:
-                client.close()
-            except Exception:
-                pass
-            time.sleep(reconnect_delay)
-            reconnect_delay = min(reconnect_delay * 2, RECONNECT_DELAY_MAX)
-            client = build_client()
-            continue
-
-        time.sleep(POLL_INTERVAL)
+    finally:
+        log.info("Cerrando conexiones...")
+        try:
+            client.close()
+        except Exception:
+            pass
+        try:
+            db_conn.close()
+        except Exception:
+            pass
+        log.info("Logger detenido.")
 
 
 if __name__ == "__main__":
