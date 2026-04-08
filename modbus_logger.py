@@ -51,8 +51,8 @@ log_events = logging.getLogger("plc_logger.events")
 # CONFIGURACIÓN
 # ---------------------------------------------------------------------------
 
-PLC_IP         = "127.0.0.1"
-PLC_PORT       = 5020
+PLC_IP         = "192.168.200.10"
+PLC_PORT       = 502
 TOTAL_INPUTS   = 30        # Discrete Inputs (%I) — read_discrete_inputs
 TOTAL_OUTPUTS  = 15        # Coils (%Q)           — read_coils
 TOTAL_SIGNALS  = TOTAL_INPUTS + TOTAL_OUTPUTS
@@ -344,6 +344,8 @@ def start_logger():
                     description = tags[i]["description"] if i < len(tags) else f"Signal {i}"
                     address     = tags[i]["address"]     if i < len(tags) else f"addr_{i}"
                     signal_type = "INPUT" if i < TOTAL_INPUTS else "OUTPUT"
+                    if signal_type == "OUTPUT" and address.startswith("%I"):
+                        address = "%Q" + address[2:]
                     state       = "ON" if current else "OFF"
 
                     save_event(tag, address, signal_type, state, description)
