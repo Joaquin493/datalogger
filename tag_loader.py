@@ -19,8 +19,12 @@ def load_tags():
         address = str(row["Dirección"]).strip()
         symbol = str(row["Símbolo"]).strip()
         description = str(row["Comentario"]).strip()
-        if symbol == "nan":
+        if address == "nan" or not address.startswith("%"):
             continue
+        if symbol == "nan" or not symbol:
+            symbol = address
+        if description == "nan":
+            description = ""
         tags.append({
             "address": address,
             "tag": symbol,

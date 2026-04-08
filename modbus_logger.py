@@ -60,7 +60,7 @@ POLL_INTERVAL  = 0.5       # Tiempo entre lecturas (segundos)
 
 # Entradas — un bloque continuo desde DI_ADDR
 DI_ADDR        = 0         # %I0.0
-TOTAL_INPUTS   = 48        # %I0.0 → %I2.15 (3 palabras × 16 bits)
+TOTAL_INPUTS   = 56        # %I0.0 → %I2.15 (3 palabras × 16 bits)
 
 # Salidas — dos bloques separados en el mapa Modbus
 COIL_BLOCK1_ADDR  = 0      # %Q0.0 → %Q0.15
