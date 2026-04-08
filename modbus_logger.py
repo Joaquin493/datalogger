@@ -51,8 +51,8 @@ log_events = logging.getLogger("plc_logger.events")
 # CONFIGURACIÓN
 # ---------------------------------------------------------------------------
 
-PLC_IP         = "192.168.200.10"
-PLC_PORT       = 502
+PLC_IP         = "127.0.0.1"
+PLC_PORT       = 5020
 TOTAL_INPUTS   = 30        # Discrete Inputs (%I) — read_discrete_inputs
 TOTAL_OUTPUTS  = 15        # Coils (%Q)           — read_coils
 TOTAL_SIGNALS  = TOTAL_INPUTS + TOTAL_OUTPUTS
