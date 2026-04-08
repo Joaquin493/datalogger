@@ -51,8 +51,8 @@ log_events = logging.getLogger("plc_logger.events")
 # CONFIGURACIÓN
 # ---------------------------------------------------------------------------
 
-PLC_IP         = "127.0.0.1"
-PLC_PORT       = 5020
+PLC_IP         = "192.168.200.10"
+PLC_PORT       = 502
 MAX_EVENTS     = 1_000_000
 DEVICE_ID      = 1         # Cambiar a 255 para Schneider M340/M580
 MIN_DELTA      = 0.1       # Debounce en segundos
@@ -70,8 +70,14 @@ COIL_BLOCK2_COUNT = 32
 
 TOTAL_OUTPUTS  = COIL_BLOCK1_COUNT + COIL_BLOCK2_COUNT   # 48
 TOTAL_SIGNALS  = TOTAL_INPUTS + TOTAL_OUTPUTS
-MIN_DELTA      = 0.1       # Debounce en segundos
-POLL_INTERVAL  = 0.5       # Tiempo entre lecturas (segundos)
+
+# Holding Registers (FC03) — %MW, dos bloques separados
+HR_BLOCK1_ADDR  = 0    # %MW0  → %MW50
+HR_BLOCK1_COUNT = 51
+HR_BLOCK2_ADDR  = 100  # %MW100 → %MW114
+HR_BLOCK2_COUNT = 15
+
+HR_COUNT = HR_BLOCK1_COUNT + HR_BLOCK2_COUNT   # 66
 
 # Parámetros del cliente Modbus (según docs oficiales)
 MODBUS_TIMEOUT = 3     # segundos — socket timeout
@@ -259,6 +265,24 @@ def read_coils(client):
     return values
 
 
+def read_holding_registers(client):
+    """
+    Lee registros de memoria — tabla 4x (%MW).
+    Función Modbus 0x03 (Read Holding Registers). Dos bloques separados.
+    """
+    log_modbus.debug(f"Leyendo HRs: bloque1 addr={HR_BLOCK1_ADDR} count={HR_BLOCK1_COUNT}, "
+                     f"bloque2 addr={HR_BLOCK2_ADDR} count={HR_BLOCK2_COUNT}...")
+    result1 = client.read_holding_registers(address=HR_BLOCK1_ADDR, count=HR_BLOCK1_COUNT, device_id=DEVICE_ID)
+    _check_result(result1, f"HR bloque1 addr={HR_BLOCK1_ADDR} count={HR_BLOCK1_COUNT}")
+
+    result2 = client.read_holding_registers(address=HR_BLOCK2_ADDR, count=HR_BLOCK2_COUNT, device_id=DEVICE_ID)
+    _check_result(result2, f"HR bloque2 addr={HR_BLOCK2_ADDR} count={HR_BLOCK2_COUNT}")
+
+    values = list(result1.registers[:HR_BLOCK1_COUNT]) + list(result2.registers[:HR_BLOCK2_COUNT])
+    log_modbus.debug(f"Total Holding Registers leídos: {len(values)}")
+    return values
+
+
 # ---------------------------------------------------------------------------
 # LOOP PRINCIPAL
 # ---------------------------------------------------------------------------
@@ -292,31 +316,41 @@ def start_logger():
     reconnect_delay = BACKOFF_BASE
 
     # Pre-computar arrays de tags para evitar dict lookups en el hot loop
+    total_all = TOTAL_SIGNALS + HR_COUNT
+
     def _fallback_address(i):
-        """Genera dirección %Ix.y / %Qx.y cuando el Excel no tiene tag para el índice i."""
+        """Genera dirección %Ix.y / %Qx.y / %MWn cuando el Excel no tiene tag para el índice i."""
         if i < TOTAL_INPUTS:
             return f"%I{i // 16}.{i % 16}"
-        j = i - TOTAL_INPUTS
-        if j < COIL_BLOCK1_COUNT:
-            return f"%Q0.{j}"
-        k = j - COIL_BLOCK1_COUNT
-        return f"%Q{3 + k // 16}.{k % 16}"
+        if i < TOTAL_SIGNALS:
+            j = i - TOTAL_INPUTS
+            if j < COIL_BLOCK1_COUNT:
+                return f"%Q0.{j}"
+            k = j - COIL_BLOCK1_COUNT
+            return f"%Q{3 + k // 16}.{k % 16}"
+        k = i - TOTAL_SIGNALS
+        if k < HR_BLOCK1_COUNT:
+            return f"%MW{HR_BLOCK1_ADDR + k}"
+        return f"%MW{HR_BLOCK2_ADDR + (k - HR_BLOCK1_COUNT)}"
 
-    tag_names        = [tags[i]["tag"]         if i < len(tags) else f"TAG_{i}"       for i in range(TOTAL_SIGNALS)]
-    tag_descriptions = [tags[i]["description"] if i < len(tags) else f"Signal {i}"    for i in range(TOTAL_SIGNALS)]
-    signal_types     = ["INPUT" if i < TOTAL_INPUTS else "OUTPUT"                      for i in range(TOTAL_SIGNALS)]
+    tag_names        = [tags[i]["tag"]         if i < len(tags) else f"TAG_{i}"       for i in range(total_all)]
+    tag_descriptions = [tags[i]["description"] if i < len(tags) else f"Signal {i}"    for i in range(total_all)]
+    signal_types     = (
+        ["INPUT"    if i < TOTAL_INPUTS  else "OUTPUT" for i in range(TOTAL_SIGNALS)] +
+        ["REGISTER"] * HR_COUNT
+    )
     tag_addresses    = [
         ("%Q" + (tags[i]["address"] if i < len(tags) else _fallback_address(i))[2:])
         if signal_types[i] == "OUTPUT" and (tags[i]["address"] if i < len(tags) else "").startswith("%I")
         else (tags[i]["address"] if i < len(tags) else _fallback_address(i))
-        for i in range(TOTAL_SIGNALS)
+        for i in range(total_all)
     ]
 
-    # Vector de estado anterior y timestamps de debounce
-    # Índices 0..TOTAL_INPUTS-1             → Discrete Inputs (%I)
-    # Índices TOTAL_INPUTS..TOTAL_SIGNALS-1 → Coils (%Q)
-    previous_values  = [False] * TOTAL_SIGNALS
-    last_change_time = [0.0]   * TOTAL_SIGNALS
+    # Vectores de estado anterior — booleanos para I/O, enteros para registros
+    previous_values    = [False] * TOTAL_SIGNALS
+    last_change_time   = [0.0]   * TOTAL_SIGNALS
+    previous_registers = [None]  * HR_COUNT
+    last_register_time = [0.0]   * HR_COUNT
 
     log.info("Entrando al loop de polling...")
 
@@ -337,10 +371,11 @@ def start_logger():
                     reconnect_delay = BACKOFF_BASE
 
                 # ── Lecturas ──────────────────────────────────────────
-                t_start = time.perf_counter()
-                inputs  = read_discrete_inputs(client)
-                outputs = read_coils(client)
-                t_ms    = (time.perf_counter() - t_start) * 1000
+                t_start    = time.perf_counter()
+                inputs     = read_discrete_inputs(client)
+                outputs    = read_coils(client)
+                registers  = read_holding_registers(client)
+                t_ms       = (time.perf_counter() - t_start) * 1000
 
                 values = inputs + outputs
 
@@ -367,6 +402,19 @@ def start_logger():
                         save_event(db_conn, tag_names[i], tag_addresses[i], signal_types[i], state, tag_descriptions[i])
                         log_events.info(
                             f"[{signal_types[i]}] {tag_names[i]} | {tag_addresses[i]} | {state} | {tag_descriptions[i]}"
+                        )
+                        changes += 1
+
+                # ── Holding Registers ─────────────────────────────────
+                for k, current in enumerate(registers):
+                    if current != previous_registers[k] and (now - last_register_time[k]) > MIN_DELTA:
+                        last_register_time[k]   = now
+                        previous_registers[k]   = current
+                        idx = TOTAL_SIGNALS + k
+
+                        save_event(db_conn, tag_names[idx], tag_addresses[idx], "REGISTER", str(current), tag_descriptions[idx])
+                        log_events.info(
+                            f"[REGISTER] {tag_names[idx]} | {tag_addresses[idx]} | {current} | {tag_descriptions[idx]}"
                         )
                         changes += 1
 
