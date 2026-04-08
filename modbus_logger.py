@@ -319,7 +319,7 @@ def start_logger():
     total_all = TOTAL_SIGNALS + HR_COUNT
 
     def _fallback_address(i):
-        """Genera dirección %Ix.y / %Qx.y / %MWn cuando el Excel no tiene tag."""
+        """Genera dirección %Ix.y / %Qx.y / %MWn cuando el Excel no tiene tag para el índice i."""
         if i < TOTAL_INPUTS:
             return f"%I{i // 16}.{i % 16}"
         if i < TOTAL_SIGNALS:
@@ -336,7 +336,7 @@ def start_logger():
     tag_names        = [tags[i]["tag"]         if i < len(tags) else f"TAG_{i}"       for i in range(total_all)]
     tag_descriptions = [tags[i]["description"] if i < len(tags) else f"Signal {i}"    for i in range(total_all)]
     signal_types     = (
-        ["INPUT" if i < TOTAL_INPUTS else "OUTPUT" for i in range(TOTAL_SIGNALS)] +
+        ["INPUT"    if i < TOTAL_INPUTS  else "OUTPUT" for i in range(TOTAL_SIGNALS)] +
         ["REGISTER"] * HR_COUNT
     )
     tag_addresses    = [
