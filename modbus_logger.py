@@ -68,8 +68,13 @@ COIL_BLOCK1_COUNT = 16
 COIL_BLOCK2_ADDR  = 48     # %Q3.0 → %Q4.15
 COIL_BLOCK2_COUNT = 32
 
+# Timers — %TM0.Q → %TM26.Q (27 bits, dirección a confirmar con PLC real)
+TIMER_ADDR  = 200          # dirección provisional para pruebas con ModRSsim2
+TIMER_COUNT = 27
+
 TOTAL_OUTPUTS  = COIL_BLOCK1_COUNT + COIL_BLOCK2_COUNT   # 48
-TOTAL_SIGNALS  = TOTAL_INPUTS + TOTAL_OUTPUTS
+TOTAL_TIMERS   = TIMER_COUNT                               # 27
+TOTAL_SIGNALS  = TOTAL_INPUTS + TOTAL_OUTPUTS + TOTAL_TIMERS
 
 # Holding Registers (FC03) — %MW, dos bloques separados
 HR_BLOCK1_ADDR  = 0    # %MW0  → %MW50
@@ -249,18 +254,24 @@ def read_discrete_inputs(client):
 
 def read_coils(client):
     """
-    Lee salidas digitales / coils — tabla 0x (%Q).
-    Función Modbus 0x01 (Read Coils). Dos bloques de direcciones separados.
+    Lee salidas digitales / coils — tabla 0x (%Q) y timers (%TM.Q).
+    Función Modbus 0x01 (Read Coils). Tres bloques de direcciones.
     """
     log_modbus.debug(f"Leyendo Coils: bloque1 addr={COIL_BLOCK1_ADDR} count={COIL_BLOCK1_COUNT}, "
-                     f"bloque2 addr={COIL_BLOCK2_ADDR} count={COIL_BLOCK2_COUNT}...")
+                     f"bloque2 addr={COIL_BLOCK2_ADDR} count={COIL_BLOCK2_COUNT}, "
+                     f"timers addr={TIMER_ADDR} count={TIMER_COUNT}...")
     result1 = client.read_coils(address=COIL_BLOCK1_ADDR, count=COIL_BLOCK1_COUNT, device_id=DEVICE_ID)
     _check_result(result1, f"Coil bloque1 addr={COIL_BLOCK1_ADDR} count={COIL_BLOCK1_COUNT}")
 
     result2 = client.read_coils(address=COIL_BLOCK2_ADDR, count=COIL_BLOCK2_COUNT, device_id=DEVICE_ID)
     _check_result(result2, f"Coil bloque2 addr={COIL_BLOCK2_ADDR} count={COIL_BLOCK2_COUNT}")
 
-    values = list(result1.bits[:COIL_BLOCK1_COUNT]) + list(result2.bits[:COIL_BLOCK2_COUNT])
+    result3 = client.read_coils(address=TIMER_ADDR, count=TIMER_COUNT, device_id=DEVICE_ID)
+    _check_result(result3, f"Timers addr={TIMER_ADDR} count={TIMER_COUNT}")
+
+    values = (list(result1.bits[:COIL_BLOCK1_COUNT]) +
+              list(result2.bits[:COIL_BLOCK2_COUNT]) +
+              list(result3.bits[:TIMER_COUNT]))
     log_modbus.debug(f"Total Coils leídos: {len(values)}")
     return values
 
@@ -319,15 +330,17 @@ def start_logger():
     total_all = TOTAL_SIGNALS + HR_COUNT
 
     def _fallback_address(i):
-        """Genera dirección %Ix.y / %Qx.y / %MWn cuando el Excel no tiene tag para el índice i."""
+        """Genera dirección %Ix.y / %Qx.y / %TMn.Q / %MWn cuando el Excel no tiene tag."""
         if i < TOTAL_INPUTS:
             return f"%I{i // 16}.{i % 16}"
         if i < TOTAL_SIGNALS:
             j = i - TOTAL_INPUTS
             if j < COIL_BLOCK1_COUNT:
                 return f"%Q0.{j}"
-            k = j - COIL_BLOCK1_COUNT
-            return f"%Q{3 + k // 16}.{k % 16}"
+            j -= COIL_BLOCK1_COUNT
+            if j < COIL_BLOCK2_COUNT:
+                return f"%Q{3 + j // 16}.{j % 16}"
+            return f"%TM{j - COIL_BLOCK2_COUNT}.Q"
         k = i - TOTAL_SIGNALS
         if k < HR_BLOCK1_COUNT:
             return f"%MW{HR_BLOCK1_ADDR + k}"
@@ -336,7 +349,8 @@ def start_logger():
     tag_names        = [tags[i]["tag"]         if i < len(tags) else f"TAG_{i}"       for i in range(total_all)]
     tag_descriptions = [tags[i]["description"] if i < len(tags) else f"Signal {i}"    for i in range(total_all)]
     signal_types     = (
-        ["INPUT"    if i < TOTAL_INPUTS  else "OUTPUT" for i in range(TOTAL_SIGNALS)] +
+        ["INPUT"  if i < TOTAL_INPUTS else "OUTPUT" for i in range(TOTAL_INPUTS + TOTAL_OUTPUTS)] +
+        ["TIMER"] * TOTAL_TIMERS +
         ["REGISTER"] * HR_COUNT
     )
     tag_addresses    = [
