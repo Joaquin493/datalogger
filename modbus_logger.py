@@ -149,6 +149,15 @@ def init_db(conn):
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_id        ON events(id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_tag       ON events(tag)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)")
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS system_events(
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type  TEXT,
+                description TEXT,
+                timestamp   TEXT
+            )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_sysev_timestamp ON system_events(timestamp)")
         conn.commit()
 
         cursor.execute("SELECT COUNT(*) FROM events")
@@ -178,6 +187,19 @@ def enforce_fifo(conn):
             log_db.debug(f"FIFO OK — {total:,}/{MAX_EVENTS:,} eventos")
     except Exception as e:
         log_db.error(f"Error en enforce_fifo: {e}", exc_info=True)
+
+
+def save_system_event(conn, event_type, description):
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        conn.execute(
+            "INSERT INTO system_events(event_type, description, timestamp) VALUES (?, ?, ?)",
+            (event_type, description, timestamp)
+        )
+        conn.commit()
+        log.info(f"[SISTEMA] {event_type} — {description}")
+    except Exception as e:
+        log_db.error(f"Error al guardar evento de sistema: {e}", exc_info=True)
 
 
 def save_event(conn, tag, address, signal_type, state, description):
@@ -353,6 +375,9 @@ def start_logger():
     last_register_time = [0.0]   * HR_COUNT
 
     log.info("Entrando al loop de polling...")
+    save_system_event(db_conn, "INICIO", f"Sistema iniciado — PLC {PLC_IP}:{PLC_PORT}")
+
+    was_connected = False
 
     try:
         while True:
@@ -368,6 +393,11 @@ def start_logger():
                         f"Conexión establecida con {PLC_IP}:{PLC_PORT} "
                         f"(tras {connection_status['retries']} reintento(s))"
                     )
+                    if not was_connected:
+                        save_system_event(db_conn, "CONEXION", f"Conexión establecida con {PLC_IP}:{PLC_PORT}")
+                    elif connection_status["retries"] > 0:
+                        save_system_event(db_conn, "RECONEXION", f"Reconexión exitosa con {PLC_IP}:{PLC_PORT} tras {connection_status['retries']} reintento(s)")
+                    was_connected = True
                     reconnect_delay = BACKOFF_BASE
 
                 # ── Lecturas ──────────────────────────────────────────
@@ -427,6 +457,9 @@ def start_logger():
                 connection_status["last_error"] = str(e)
                 connection_status["retries"]   += 1
                 is_conn_error = isinstance(e, ConnectionError)
+                if connection_status["retries"] == 1:
+                    save_system_event(db_conn, "DESCONEXION", f"Conexión perdida con {PLC_IP}:{PLC_PORT} — {e}")
+                    was_connected = False
                 log.error(
                     f"{'Conexión' if is_conn_error else 'Lectura'} error "
                     f"(reintento #{connection_status['retries']}): {e} "

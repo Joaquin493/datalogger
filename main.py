@@ -10,7 +10,7 @@ from datetime import datetime
 import os
 import secrets
 
-from modbus_logger import start_logger, connection_status, load_tags_safe
+from modbus_logger import start_logger, connection_status, load_tags_safe, save_system_event
 
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
@@ -157,6 +157,21 @@ def get_signals(request: Request):
         }
         for t in tags
     ]
+
+@app.get("/system-events")
+def get_system_events(request: Request, limit: int = 200):
+    if not check_session(request):
+        return Response(status_code=401)
+    conn = sqlite3.connect("events.db")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, event_type, description, timestamp FROM system_events ORDER BY id DESC LIMIT ?",
+        (min(limit, 10000),)
+    )
+    rows = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return rows
 
 @app.get("/export")
 def export_events(request: Request, tag: str = "", search: str = "", date_from: str = "", date_to: str = ""):

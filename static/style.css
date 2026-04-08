@@ -157,6 +157,15 @@ td.desc-cell { font-family:var(--sans); font-size:12px; color:var(--text2); max-
 .page-size-select { background:var(--bg2); border:1px solid var(--border); color:var(--text2); font-family:var(--mono); font-size:12px; padding:4px 8px; border-radius:3px; outline:none; cursor:pointer; height:30px; }
 .empty-state { text-align:center; padding:40px; font-family:var(--mono); font-size:13px; color:var(--text2); letter-spacing:1px; }
 
+/* ── SISTEMA ── */
+.sysev-badge { display:inline-flex; align-items:center; gap:4px; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; letter-spacing:.5px; font-family:var(--mono); }
+.sysev-badge.INICIO      { background:#e8f4fd; color:#1a73e8; }
+.sysev-badge.CONEXION    { background:#e6f9f0; color:#1a8a4a; }
+.sysev-badge.RECONEXION  { background:#fff8e6; color:#b07a00; }
+.sysev-badge.DESCONEXION { background:#fdecea; color:#c0392b; }
+tr.ev-desconexion td { color:var(--danger); }
+tr.ev-conexion td, tr.ev-reconexion td { color:var(--accent); }
+
 /* ── SCROLLBAR ── */
 ::-webkit-scrollbar { width:6px; height:6px; }
 ::-webkit-scrollbar-track { background:var(--bg3); }

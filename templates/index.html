@@ -26,6 +26,7 @@
   <button class="tab active" onclick="switchTab('signals',this)">Panel de Señales</button>
   <button class="tab" onclick="switchTab('events',this)">Registro de Eventos</button>
   <button class="tab" onclick="switchTab('counts',this)">Contadores</button>
+  <button class="tab" onclick="switchTab('sysevents',this)">Sistema</button>
 </div>
 
 <!-- SEÑALES -->
@@ -119,6 +120,27 @@
       de <span id="pg-total">—</span> eventos
     </div>
     <div class="page-controls" id="page-controls"></div>
+  </div>
+</div>
+
+<!-- SISTEMA -->
+<div id="panel-sysevents" class="panel">
+  <div class="toolbar">
+    <div class="spacer"></div>
+    <button class="btn" onclick="loadSysEvents()">↺ Actualizar</button>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Tipo</th>
+          <th>Descripción</th>
+          <th>Timestamp</th>
+        </tr>
+      </thead>
+      <tbody id="sysev-body"></tbody>
+    </table>
+    <div id="sysev-empty" class="empty-state" style="display:none">Sin eventos del sistema</div>
   </div>
 </div>
 

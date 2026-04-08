@@ -26,6 +26,28 @@ function switchTab(name, el) {
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'))
   el.classList.add('active')
   document.getElementById('panel-' + name).classList.add('active')
+  if (name === 'sysevents') loadSysEvents()
+}
+
+// ── SISTEMA ──
+const SYSEV_ICONS = { INICIO: '▶', CONEXION: '●', RECONEXION: '↺', DESCONEXION: '✕' }
+const SYSEV_CLASS = { INICIO: 'ev-inicio', CONEXION: 'ev-conexion', RECONEXION: 'ev-reconexion', DESCONEXION: 'ev-desconexion' }
+
+async function loadSysEvents() {
+  try {
+    const res  = await fetch('/system-events')
+    const data = await res.json()
+    const tbody = document.getElementById('sysev-body')
+    const empty = document.getElementById('sysev-empty')
+    if (!data.length) { tbody.innerHTML = ''; empty.style.display = ''; return }
+    empty.style.display = 'none'
+    tbody.innerHTML = data.map(e => `
+      <tr class="${SYSEV_CLASS[e.event_type] || ''}">
+        <td><span class="sysev-badge ${e.event_type}">${SYSEV_ICONS[e.event_type] || '•'} ${e.event_type}</span></td>
+        <td>${e.description}</td>
+        <td>${e.timestamp}</td>
+      </tr>`).join('')
+  } catch(err) { console.error('sysevents:', err) }
 }
 
 // ── STATUS ──
