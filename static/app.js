@@ -67,20 +67,27 @@ function setSignalFilter(f) {
   renderSignals()
 }
 
+function isActive(s) {
+  if (s.state === 'ON') return true
+  const n = Number(s.state)
+  return !isNaN(n) && s.state !== '' && n !== 0
+}
+
 function renderSignals() {
   const sigSearch = document.getElementById('sig-search')
   const q         = sigSearch ? sigSearch.value.toLowerCase() : ''
   const grid      = document.getElementById('signal-grid')
   if (!grid) return
-  const onCount = allSignals.filter(s => s.state === 'ON').length
+  const onCount = allSignals.filter(s => isActive(s)).length
   document.getElementById('stat-total').textContent   = allSignals.length
   document.getElementById('stat-on').textContent      = onCount
   document.getElementById('stat-off').textContent     = allSignals.length - onCount
   let filtered = allSignals.filter(s => {
+    const active = isActive(s)
     const matchFilter =
       sigFilter === 'all' ||
-      (sigFilter === 'on'  && s.state === 'ON') ||
-      (sigFilter === 'off' && s.state !== 'ON')
+      (sigFilter === 'on'  && active) ||
+      (sigFilter === 'off' && !active)
     const matchSearch = !q ||
       s.tag.toLowerCase().includes(q) ||
       s.description.toLowerCase().includes(q) ||
@@ -93,7 +100,7 @@ function renderSignals() {
     return
   }
   grid.innerHTML = filtered.map(s => `
-    <div class="signal-card ${s.state}" title="${s.description}">
+    <div class="signal-card ${isActive(s) ? 'ON' : 'OFF'}" title="${s.description}">
       <div class="sig-addr">${s.address}</div>
       <div class="sig-tag">${s.tag}</div>
       <div class="sig-state">${s.state}</div>
