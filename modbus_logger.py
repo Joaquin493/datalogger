@@ -53,12 +53,23 @@ log_events = logging.getLogger("plc_logger.events")
 
 PLC_IP         = "127.0.0.1"
 PLC_PORT       = 5020
-TOTAL_INPUTS   = 30        # Discrete Inputs (%I) — read_discrete_inputs
-TOTAL_OUTPUTS  = 15        # Coils (%Q)           — read_coils
-TOTAL_SIGNALS  = TOTAL_INPUTS + TOTAL_OUTPUTS
 MAX_EVENTS     = 1_000_000
 DEVICE_ID      = 1         # Cambiar a 255 para Schneider M340/M580
-START_ADDRESS  = 0         # Cambiar a 1 si el PLC lo requiere
+MIN_DELTA      = 0.1       # Debounce en segundos
+POLL_INTERVAL  = 0.5       # Tiempo entre lecturas (segundos)
+
+# Entradas — un bloque continuo desde DI_ADDR
+DI_ADDR        = 0         # %I0.0
+TOTAL_INPUTS   = 48        # %I0.0 → %I2.15 (3 palabras × 16 bits)
+
+# Salidas — dos bloques separados en el mapa Modbus
+COIL_BLOCK1_ADDR  = 0      # %Q0.0 → %Q0.15
+COIL_BLOCK1_COUNT = 16
+COIL_BLOCK2_ADDR  = 48     # %Q3.0 → %Q4.15
+COIL_BLOCK2_COUNT = 32
+
+TOTAL_OUTPUTS  = COIL_BLOCK1_COUNT + COIL_BLOCK2_COUNT   # 48
+TOTAL_SIGNALS  = TOTAL_INPUTS + TOTAL_OUTPUTS
 MIN_DELTA      = 0.1       # Debounce en segundos
 POLL_INTERVAL  = 0.5       # Tiempo entre lecturas (segundos)
 
@@ -220,12 +231,12 @@ def read_discrete_inputs(client):
     Lee entradas digitales físicas — tabla 1x (%I).
     Función Modbus 0x02 (Read Discrete Inputs).
     """
-    log_modbus.debug(f"Leyendo {TOTAL_INPUTS} Discrete Inputs desde addr {START_ADDRESS}...")
+    log_modbus.debug(f"Leyendo {TOTAL_INPUTS} Discrete Inputs desde addr {DI_ADDR}...")
     result = client.read_discrete_inputs(
-        address=START_ADDRESS, count=TOTAL_INPUTS, device_id=DEVICE_ID
+        address=DI_ADDR, count=TOTAL_INPUTS, device_id=DEVICE_ID
     )
-    _check_result(result, f"DI addr={START_ADDRESS} count={TOTAL_INPUTS}")
-    values = result.bits[:TOTAL_INPUTS]
+    _check_result(result, f"DI addr={DI_ADDR} count={TOTAL_INPUTS}")
+    values = list(result.bits[:TOTAL_INPUTS])
     log_modbus.debug(f"Total Discrete Inputs leídos: {len(values)}")
     return values
 
@@ -233,14 +244,17 @@ def read_discrete_inputs(client):
 def read_coils(client):
     """
     Lee salidas digitales / coils — tabla 0x (%Q).
-    Función Modbus 0x01 (Read Coils).
+    Función Modbus 0x01 (Read Coils). Dos bloques de direcciones separados.
     """
-    log_modbus.debug(f"Leyendo {TOTAL_OUTPUTS} Coils desde addr {START_ADDRESS}...")
-    result = client.read_coils(
-        address=START_ADDRESS, count=TOTAL_OUTPUTS, device_id=DEVICE_ID
-    )
-    _check_result(result, f"Coil addr={START_ADDRESS} count={TOTAL_OUTPUTS}")
-    values = result.bits[:TOTAL_OUTPUTS]
+    log_modbus.debug(f"Leyendo Coils: bloque1 addr={COIL_BLOCK1_ADDR} count={COIL_BLOCK1_COUNT}, "
+                     f"bloque2 addr={COIL_BLOCK2_ADDR} count={COIL_BLOCK2_COUNT}...")
+    result1 = client.read_coils(address=COIL_BLOCK1_ADDR, count=COIL_BLOCK1_COUNT, device_id=DEVICE_ID)
+    _check_result(result1, f"Coil bloque1 addr={COIL_BLOCK1_ADDR} count={COIL_BLOCK1_COUNT}")
+
+    result2 = client.read_coils(address=COIL_BLOCK2_ADDR, count=COIL_BLOCK2_COUNT, device_id=DEVICE_ID)
+    _check_result(result2, f"Coil bloque2 addr={COIL_BLOCK2_ADDR} count={COIL_BLOCK2_COUNT}")
+
+    values = list(result1.bits[:COIL_BLOCK1_COUNT]) + list(result2.bits[:COIL_BLOCK2_COUNT])
     log_modbus.debug(f"Total Coils leídos: {len(values)}")
     return values
 
@@ -256,8 +270,7 @@ def start_logger():
     log.info("LOGGER INICIADO")
     log.info(f"  PLC:              {PLC_IP}:{PLC_PORT}")
     log.info(f"  Device ID:        {DEVICE_ID}")
-    log.info(f"  Start Address:    {START_ADDRESS}")
-    log.info(f"  Inputs  (DI):     {TOTAL_INPUTS}")
+    log.info(f"  Inputs  (DI):     {TOTAL_INPUTS} desde addr {DI_ADDR}")
     log.info(f"  Outputs (Coils):  {TOTAL_OUTPUTS}")
     log.info(f"  Total signals:    {TOTAL_SIGNALS}")
     log.info(f"  Poll interval:    {POLL_INTERVAL}s")
@@ -279,13 +292,23 @@ def start_logger():
     reconnect_delay = BACKOFF_BASE
 
     # Pre-computar arrays de tags para evitar dict lookups en el hot loop
-    tag_names        = [tags[i]["tag"]         if i < len(tags) else f"TAG_{i}"    for i in range(TOTAL_SIGNALS)]
-    tag_descriptions = [tags[i]["description"] if i < len(tags) else f"Signal {i}" for i in range(TOTAL_SIGNALS)]
-    signal_types     = ["INPUT" if i < TOTAL_INPUTS else "OUTPUT"                  for i in range(TOTAL_SIGNALS)]
+    def _fallback_address(i):
+        """Genera dirección %Ix.y / %Qx.y cuando el Excel no tiene tag para el índice i."""
+        if i < TOTAL_INPUTS:
+            return f"%I{i // 16}.{i % 16}"
+        j = i - TOTAL_INPUTS
+        if j < COIL_BLOCK1_COUNT:
+            return f"%Q0.{j}"
+        k = j - COIL_BLOCK1_COUNT
+        return f"%Q{3 + k // 16}.{k % 16}"
+
+    tag_names        = [tags[i]["tag"]         if i < len(tags) else f"TAG_{i}"       for i in range(TOTAL_SIGNALS)]
+    tag_descriptions = [tags[i]["description"] if i < len(tags) else f"Signal {i}"    for i in range(TOTAL_SIGNALS)]
+    signal_types     = ["INPUT" if i < TOTAL_INPUTS else "OUTPUT"                      for i in range(TOTAL_SIGNALS)]
     tag_addresses    = [
-        ("%Q" + (tags[i]["address"] if i < len(tags) else f"addr_{i}")[2:])
+        ("%Q" + (tags[i]["address"] if i < len(tags) else _fallback_address(i))[2:])
         if signal_types[i] == "OUTPUT" and (tags[i]["address"] if i < len(tags) else "").startswith("%I")
-        else (tags[i]["address"] if i < len(tags) else f"addr_{i}")
+        else (tags[i]["address"] if i < len(tags) else _fallback_address(i))
         for i in range(TOTAL_SIGNALS)
     ]
 
