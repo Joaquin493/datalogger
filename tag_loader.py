@@ -21,6 +21,8 @@ def load_tags():
         description = str(row["Comentario"]).strip()
         if address == "nan" or not address.startswith("%"):
             continue
+        if address.startswith("%TM"):
+            continue
         if symbol == "nan" or not symbol:
             symbol = address
         if description == "nan":
