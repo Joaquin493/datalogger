@@ -156,6 +156,7 @@ def get_signals(request: Request):
             "state":       latest.get(t["tag"], "OFF")
         }
         for t in tags
+        if not t["address"].startswith("%Q")
     ]
 
 @app.get("/system-events")
