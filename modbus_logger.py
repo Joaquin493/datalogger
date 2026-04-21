@@ -75,7 +75,7 @@ TOTAL_SIGNALS  = TOTAL_INPUTS + TOTAL_OUTPUTS
 HR_BLOCK1_ADDR  = 0    # %MW0  → %MW50
 HR_BLOCK1_COUNT = 51
 HR_BLOCK2_ADDR  = 100  # %MW100 → %MW114
-HR_BLOCK2_COUNT = 15
+HR_BLOCK2_COUNT = 20
 
 HR_COUNT = HR_BLOCK1_COUNT + HR_BLOCK2_COUNT   # 66
 
@@ -253,38 +253,39 @@ def _check_result(result, label):
     if result.isError():
         raise Exception(f"Error Modbus en {label}: {result}")
 
+# ---------------------------------------------------------------------------
+#def read_discrete_inputs(client):
+#    """
+#    Lee entradas digitales físicas — tabla 1x (%I).
+#    Función Modbus 0x02 (Read Discrete Inputs).
+#    """
+#    log_modbus.debug(f"Leyendo {TOTAL_INPUTS} Discrete Inputs desde addr {DI_ADDR}...")
+#    result = client.read_discrete_inputs(
+#        address=DI_ADDR, count=TOTAL_INPUTS, device_id=DEVICE_ID
+#    )
+#    _check_result(result, f"DI addr={DI_ADDR} count={TOTAL_INPUTS}")
+#    values = list(result.bits[:TOTAL_INPUTS])
+#    log_modbus.debug(f"Total Discrete Inputs leídos: {len(values)}")
+#    return values
+# ---------------------------------------------------------------------------
 
-def read_discrete_inputs(client):
-    """
-    Lee entradas digitales físicas — tabla 1x (%I).
-    Función Modbus 0x02 (Read Discrete Inputs).
-    """
-    log_modbus.debug(f"Leyendo {TOTAL_INPUTS} Discrete Inputs desde addr {DI_ADDR}...")
-    result = client.read_discrete_inputs(
-        address=DI_ADDR, count=TOTAL_INPUTS, device_id=DEVICE_ID
-    )
-    _check_result(result, f"DI addr={DI_ADDR} count={TOTAL_INPUTS}")
-    values = list(result.bits[:TOTAL_INPUTS])
-    log_modbus.debug(f"Total Discrete Inputs leídos: {len(values)}")
-    return values
 
+#def read_coils(client):
+#    """
+#    Lee salidas digitales / coils — tabla 0x (%Q).
+#    Función Modbus 0x01 (Read Coils). Dos bloques de direcciones separados.
+#    """
+#    log_modbus.debug(f"Leyendo Coils: bloque1 addr={COIL_BLOCK1_ADDR} count={COIL_BLOCK1_COUNT}, "
+#                     f"bloque2 addr={COIL_BLOCK2_ADDR} count={COIL_BLOCK2_COUNT}...")
+#    result1 = client.read_coils(address=COIL_BLOCK1_ADDR, count=COIL_BLOCK1_COUNT, device_id=DEVICE_ID)
+#    _check_result(result1, f"Coil bloque1 addr={COIL_BLOCK1_ADDR} count={COIL_BLOCK1_COUNT}")
+#
+#    result2 = client.read_coils(address=COIL_BLOCK2_ADDR, count=COIL_BLOCK2_COUNT, device_id=DEVICE_ID)
+#    _check_result(result2, f"Coil bloque2 addr={COIL_BLOCK2_ADDR} count={COIL_BLOCK2_COUNT}")
 
-def read_coils(client):
-    """
-    Lee salidas digitales / coils — tabla 0x (%Q).
-    Función Modbus 0x01 (Read Coils). Dos bloques de direcciones separados.
-    """
-    log_modbus.debug(f"Leyendo Coils: bloque1 addr={COIL_BLOCK1_ADDR} count={COIL_BLOCK1_COUNT}, "
-                     f"bloque2 addr={COIL_BLOCK2_ADDR} count={COIL_BLOCK2_COUNT}...")
-    result1 = client.read_coils(address=COIL_BLOCK1_ADDR, count=COIL_BLOCK1_COUNT, device_id=DEVICE_ID)
-    _check_result(result1, f"Coil bloque1 addr={COIL_BLOCK1_ADDR} count={COIL_BLOCK1_COUNT}")
-
-    result2 = client.read_coils(address=COIL_BLOCK2_ADDR, count=COIL_BLOCK2_COUNT, device_id=DEVICE_ID)
-    _check_result(result2, f"Coil bloque2 addr={COIL_BLOCK2_ADDR} count={COIL_BLOCK2_COUNT}")
-
-    values = list(result1.bits[:COIL_BLOCK1_COUNT]) + list(result2.bits[:COIL_BLOCK2_COUNT])
-    log_modbus.debug(f"Total Coils leídos: {len(values)}")
-    return values
+#    values = list(result1.bits[:COIL_BLOCK1_COUNT]) + list(result2.bits[:COIL_BLOCK2_COUNT])
+#    log_modbus.debug(f"Total Coils leídos: {len(values)}")
+#    return values
 
 
 def read_holding_registers(client):
