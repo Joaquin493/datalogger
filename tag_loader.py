@@ -16,9 +16,9 @@ def load_tags():
     df = pd.read_excel("Programa_TTA_IRSA_convertido.xlsx")
     tags = []
     for _, row in df.iterrows():
-        address = str(row["Dirección"]).strip()
-        symbol = str(row["Símbolo"]).strip()
-        description = str(row["Comentario"]).strip()
+        address = str(row.get("Dirección", row.get("Address", "nan"))).strip()
+        symbol = str(row.get("Símbolo", row.get("Symbol", "nan"))).strip()
+        description = str(row.get("Comentario", row.get("Comment", "nan"))).strip()
         if address == "nan" or not address.startswith("%"):
             continue
         if address.startswith("%TM"):
