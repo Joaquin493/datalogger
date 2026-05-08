@@ -1,13 +1,37 @@
 # Base de datos (no subir datos reales)
 events.db
+events.db-journal
+events.db-wal
+events.db-shm
 events_export.xlsx
 
-# Excel con tags (opcional — subir si es público)
-# Programa_TTA_IRSA_convertido.xlsx
+# Logs (rotativos, generados en runtime)
+logs/
+*.log
 
 # Python
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 .env
 venv/
+.venv/
+env/
+*.egg-info/
+build/
+dist/
+
+# IDE / editores
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Sistema operativo
+Thumbs.db
+.DS_Store
+
+# Archivos temporales de inspección/debug
+_inspect_*.py
+_smoke_test.py

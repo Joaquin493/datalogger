@@ -54,32 +54,23 @@ log_events = logging.getLogger("plc_logger.events")
 PLC_IP         = "192.168.200.10"
 PLC_PORT       = 502
 MAX_EVENTS     = 1_000_000
-DEVICE_ID      = 1         # Cambiar a 255 para Schneider M340/M580
+# Schneider M221: por default el server Modbus responde con ID 255.
+# Si en EcoStruxure Machine Expert Basic se habilita "Modbus Mapping",
+# se puede definir un ID custom (típicamente 1). Confirmar con el PLC físico.
+DEVICE_ID      = 1
 MIN_DELTA      = 0.1       # Debounce en segundos
 POLL_INTERVAL  = 0.5       # Tiempo entre lecturas (segundos)
 
-# Entradas — un bloque continuo desde DI_ADDR
-DI_ADDR        = 0         # %I0.0
-TOTAL_INPUTS   = 56        # %I0.0 → %I2.15 (3 palabras × 16 bits)
-
-# Salidas — dos bloques separados en el mapa Modbus
-COIL_BLOCK1_ADDR  = 0      # %Q0.0 → %Q0.15
-COIL_BLOCK1_COUNT = 16
-COIL_BLOCK2_ADDR  = 48     # %Q3.0 → %Q4.15
-COIL_BLOCK2_COUNT = 32
-
-TOTAL_OUTPUTS  = COIL_BLOCK1_COUNT + COIL_BLOCK2_COUNT   # 48
-TOTAL_SIGNALS  = TOTAL_INPUTS + TOTAL_OUTPUTS
-
-# Holding Registers (FC03) — %MW, dos bloques separados
+# Holding Registers analógicos/numéricos — %MW, dos bloques separados.
+# Estos NO contienen el espejo de I/O — son registros propios del programa.
 HR_BLOCK1_ADDR  = 0    # %MW0  → %MW50
 HR_BLOCK1_COUNT = 51
 HR_BLOCK2_ADDR  = 100  # %MW100 → %MW114
 HR_BLOCK2_COUNT = 20
 
-HR_COUNT = HR_BLOCK1_COUNT + HR_BLOCK2_COUNT   # 66
+HR_COUNT = HR_BLOCK1_COUNT + HR_BLOCK2_COUNT   # 71
 
-# Parámetros del cliente Modbus (según docs oficiales)
+# Parámetros del cliente Modbus
 MODBUS_TIMEOUT = 3     # segundos — socket timeout
 MODBUS_RETRIES = 3     # reintentos automáticos por request fallido
 BACKOFF_BASE   = 1.0   # backoff inicial en segundos
@@ -104,25 +95,32 @@ event_counter = 0
 # ---------------------------------------------------------------------------
 
 def load_tags_safe():
+    """
+    Carga los tags del xlsx. Sin tags no hay mapeo I/O y el logger no arranca.
+    """
     log.info("Cargando tags desde tag_loader...")
     try:
         tags = load_tags()
-        log.info(f"Tags cargados: {len(tags)} entradas")
-        if len(tags) < TOTAL_SIGNALS:
-            log.warning(
-                f"Solo hay {len(tags)} tags pero se esperan {TOTAL_SIGNALS}. "
-                "Las señales sin tag usarán nombres genéricos."
-            )
-        elif len(tags) > TOTAL_SIGNALS:
-            log.warning(
-                f"Hay {len(tags)} tags pero solo se van a usar {TOTAL_SIGNALS}. "
-                "El resto se ignorará."
-            )
+        if not tags:
+            log.critical("tag_loader devolvió 0 tags — revisar xlsx y formato.")
+            return []
+        n_in  = sum(1 for t in tags if t["type"] == "INPUT")
+        n_out = sum(1 for t in tags if t["type"] == "OUTPUT")
+        log.info(f"Tags cargados: {len(tags)} ({n_in} INPUT, {n_out} OUTPUT)")
         return tags
     except Exception as e:
         log.critical(f"No se pudieron cargar los tags: {e}", exc_info=True)
-        log.warning("Se continuará con tags genéricos (TAG_0, TAG_1, ...)")
         return []
+
+
+def _word_range(subset):
+    """Rango contiguo de %MW que cubre todos los mw_word de un subset de tags."""
+    if not subset:
+        return 0, 0
+    words = [t["mw_word"] for t in subset]
+    base  = min(words)
+    count = max(words) - base + 1
+    return base, count
 
 
 # ---------------------------------------------------------------------------
@@ -226,11 +224,6 @@ def save_event(conn, tag, address, signal_type, state, description):
 # ---------------------------------------------------------------------------
 
 def build_client():
-    """
-    Crea un ModbusTcpClient con los parámetros recomendados.
-    El cliente sincrónico NO reconecta automáticamente.
-    El backoff exponencial se maneja manualmente en el loop principal.
-    """
     log_modbus.debug(
         f"Creando ModbusTcpClient — "
         f"host={PLC_IP} port={PLC_PORT} "
@@ -245,64 +238,28 @@ def build_client():
 
 
 # ---------------------------------------------------------------------------
-# LECTURAS MODBUS
+# LECTURAS MODBUS — FC03 únicamente (M221 no expone %I/%Q vía Modbus)
 # ---------------------------------------------------------------------------
 
 def _check_result(result, label):
-    """Verifica un resultado Modbus usando isError() (pymodbus >= 3.x)."""
     if result.isError():
         raise Exception(f"Error Modbus en {label}: {result}")
 
 
-def read_discrete_inputs(client):
-    """
-    Lee entradas digitales físicas — tabla 1x (%I).
-    Función Modbus 0x02 (Read Discrete Inputs).
-    """
-    log_modbus.debug(f"Leyendo {TOTAL_INPUTS} Discrete Inputs desde addr {DI_ADDR}...")
-    result = client.read_discrete_inputs(
-        address=DI_ADDR, count=TOTAL_INPUTS, device_id=DEVICE_ID
-    )
-    _check_result(result, f"DI addr={DI_ADDR} count={TOTAL_INPUTS}")
-    values = list(result.bits[:TOTAL_INPUTS])
-    log_modbus.debug(f"Total Discrete Inputs leídos: {len(values)}")
-    return values
+def read_register_block(client, addr, count, label):
+    """Lee `count` Holding Registers a partir de `addr` (FC03)."""
+    log_modbus.debug(f"FC03 {label}: addr={addr} count={count}")
+    result = client.read_holding_registers(address=addr, count=count, device_id=DEVICE_ID)
+    _check_result(result, f"{label} addr={addr} count={count}")
+    return list(result.registers[:count])
 
 
-def read_coils(client):
-    """
-    Lee salidas digitales / coils — tabla 0x (%Q).
-    Función Modbus 0x01 (Read Coils). Dos bloques de direcciones separados.
-    """
-    log_modbus.debug(f"Leyendo Coils: bloque1 addr={COIL_BLOCK1_ADDR} count={COIL_BLOCK1_COUNT}, "
-                     f"bloque2 addr={COIL_BLOCK2_ADDR} count={COIL_BLOCK2_COUNT}...")
-    result1 = client.read_coils(address=COIL_BLOCK1_ADDR, count=COIL_BLOCK1_COUNT, device_id=DEVICE_ID)
-    _check_result(result1, f"Coil bloque1 addr={COIL_BLOCK1_ADDR} count={COIL_BLOCK1_COUNT}")
-
-    result2 = client.read_coils(address=COIL_BLOCK2_ADDR, count=COIL_BLOCK2_COUNT, device_id=DEVICE_ID)
-    _check_result(result2, f"Coil bloque2 addr={COIL_BLOCK2_ADDR} count={COIL_BLOCK2_COUNT}")
-
-    values = list(result1.bits[:COIL_BLOCK1_COUNT]) + list(result2.bits[:COIL_BLOCK2_COUNT])
-    log_modbus.debug(f"Total Coils leídos: {len(values)}")
-    return values
-
-
-def read_holding_registers(client):
-    """
-    Lee registros de memoria — tabla 4x (%MW).
-    Función Modbus 0x03 (Read Holding Registers). Dos bloques separados.
-    """
-    log_modbus.debug(f"Leyendo HRs: bloque1 addr={HR_BLOCK1_ADDR} count={HR_BLOCK1_COUNT}, "
-                     f"bloque2 addr={HR_BLOCK2_ADDR} count={HR_BLOCK2_COUNT}...")
-    result1 = client.read_holding_registers(address=HR_BLOCK1_ADDR, count=1, device_id=DEVICE_ID)
-    _check_result(result1, f"HR bloque1 addr={HR_BLOCK1_ADDR} count={HR_BLOCK1_COUNT}")
-
-    result2 = client.read_holding_registers(address=HR_BLOCK2_ADDR, count=HR_BLOCK2_COUNT, device_id=DEVICE_ID)
-    _check_result(result2, f"HR bloque2 addr={HR_BLOCK2_ADDR} count={HR_BLOCK2_COUNT}")
-
-    values = list(result1.registers[:HR_BLOCK1_COUNT]) + list(result2.registers[:HR_BLOCK2_COUNT])
-    log_modbus.debug(f"Total Holding Registers leídos: {len(values)}")
-    return values
+def decode_bits(registers, base_word, tags_subset):
+    """Para cada tag, extrae el bit correspondiente del registro espejado."""
+    return [
+        (registers[t["mw_word"] - base_word] >> t["mw_bit"]) & 1
+        for t in tags_subset
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -312,12 +269,29 @@ def read_holding_registers(client):
 def start_logger():
     global connection_status
 
+    tags = load_tags_safe()
+    if not tags:
+        log.critical("Sin tags no se puede iniciar el logger. Abortando.")
+        return
+
+    input_tags  = [t for t in tags if t["type"] == "INPUT"]
+    output_tags = [t for t in tags if t["type"] == "OUTPUT"]
+
+    in_base,  in_count  = _word_range(input_tags)
+    out_base, out_count = _word_range(output_tags)
+
+    TOTAL_INPUTS  = len(input_tags)
+    TOTAL_OUTPUTS = len(output_tags)
+    TOTAL_SIGNALS = TOTAL_INPUTS + TOTAL_OUTPUTS
+
     log.info("=" * 60)
     log.info("LOGGER INICIADO")
     log.info(f"  PLC:              {PLC_IP}:{PLC_PORT}")
     log.info(f"  Device ID:        {DEVICE_ID}")
-    log.info(f"  Inputs  (DI):     {TOTAL_INPUTS} desde addr {DI_ADDR}")
-    log.info(f"  Outputs (Coils):  {TOTAL_OUTPUTS}")
+    log.info(f"  Inputs:           {TOTAL_INPUTS}  (espejo en %MW{in_base}..%MW{in_base + in_count - 1})")
+    log.info(f"  Outputs:          {TOTAL_OUTPUTS}  (espejo en %MW{out_base}..%MW{out_base + out_count - 1})")
+    log.info(f"  HR analógicos:    {HR_COUNT}  (%MW{HR_BLOCK1_ADDR}..%MW{HR_BLOCK1_ADDR + HR_BLOCK1_COUNT - 1}, "
+             f"%MW{HR_BLOCK2_ADDR}..%MW{HR_BLOCK2_ADDR + HR_BLOCK2_COUNT - 1})")
     log.info(f"  Total signals:    {TOTAL_SIGNALS}")
     log.info(f"  Poll interval:    {POLL_INTERVAL}s")
     log.info(f"  Debounce:         {MIN_DELTA}s")
@@ -329,7 +303,6 @@ def start_logger():
     log.info(f"  Log file:         {LOG_FILE}")
     log.info("=" * 60)
 
-    tags    = load_tags_safe()
     db_conn = sqlite3.connect("events.db")
     init_db(db_conn)
     enforce_fifo(db_conn)
@@ -337,42 +310,26 @@ def start_logger():
     client          = build_client()
     reconnect_delay = BACKOFF_BASE
 
-    # Pre-computar arrays de tags para evitar dict lookups en el hot loop
-    total_all = TOTAL_SIGNALS + HR_COUNT
+    # Pre-computar arrays para evitar dict lookups en el hot loop.
+    io_tags          = input_tags + output_tags
+    tag_names_io     = [t["tag"]         for t in io_tags]
+    tag_addresses_io = [t["address"]     for t in io_tags]
+    tag_descs_io     = [t["description"] for t in io_tags]
+    signal_types_io  = [t["type"]        for t in io_tags]
 
-    def _fallback_address(i):
-        """Genera dirección %Ix.y / %Qx.y / %MWn cuando el Excel no tiene tag para el índice i."""
-        if i < TOTAL_INPUTS:
-            return f"%I{i // 16}.{i % 16}"
-        if i < TOTAL_SIGNALS:
-            j = i - TOTAL_INPUTS
-            if j < COIL_BLOCK1_COUNT:
-                return f"%Q0.{j}"
-            k = j - COIL_BLOCK1_COUNT
-            return f"%Q{3 + k // 16}.{k % 16}"
-        k = i - TOTAL_SIGNALS
-        if k < HR_BLOCK1_COUNT:
-            return f"%MW{HR_BLOCK1_ADDR + k}"
-        return f"%MW{HR_BLOCK2_ADDR + (k - HR_BLOCK1_COUNT)}"
-
-    tag_names        = [tags[i]["tag"]         if i < len(tags) else f"TAG_{i}"       for i in range(total_all)]
-    tag_descriptions = [tags[i]["description"] if i < len(tags) else f"Signal {i}"    for i in range(total_all)]
-    signal_types     = (
-        ["INPUT"    if i < TOTAL_INPUTS  else "OUTPUT" for i in range(TOTAL_SIGNALS)] +
-        ["REGISTER"] * HR_COUNT
+    # Tags genéricos para los HR analógicos (no vienen del xlsx).
+    hr_addresses = (
+        [f"%MW{HR_BLOCK1_ADDR + i}" for i in range(HR_BLOCK1_COUNT)] +
+        [f"%MW{HR_BLOCK2_ADDR + i}" for i in range(HR_BLOCK2_COUNT)]
     )
-    tag_addresses    = [
-        ("%Q" + (tags[i]["address"] if i < len(tags) else _fallback_address(i))[2:])
-        if signal_types[i] == "OUTPUT" and (tags[i]["address"] if i < len(tags) else "").startswith("%I")
-        else (tags[i]["address"] if i < len(tags) else _fallback_address(i))
-        for i in range(total_all)
-    ]
+    hr_names = [f"REG_{a[1:]}"  for a in hr_addresses]
+    hr_descs = [f"Register {a}" for a in hr_addresses]
 
-    # Vectores de estado anterior — booleanos para I/O, enteros para registros
-    previous_values    = [False] * TOTAL_SIGNALS
-    last_change_time   = [0.0]   * TOTAL_SIGNALS
-    previous_registers = [None]  * HR_COUNT
-    last_register_time = [0.0]   * HR_COUNT
+    # Vectores de estado anterior
+    previous_values    = [None] * TOTAL_SIGNALS
+    last_change_time   = [0.0]  * TOTAL_SIGNALS
+    previous_registers = [None] * HR_COUNT
+    last_register_time = [0.0]  * HR_COUNT
 
     log.info("Entrando al loop de polling...")
     save_system_event(db_conn, "INICIO", f"Sistema iniciado — PLC {PLC_IP}:{PLC_PORT}")
@@ -400,14 +357,18 @@ def start_logger():
                     was_connected = True
                     reconnect_delay = BACKOFF_BASE
 
-                # ── Lecturas ──────────────────────────────────────────
-                t_start    = time.perf_counter()
-                inputs     = read_discrete_inputs(client)
-                outputs    = read_coils(client)
-                registers  = read_holding_registers(client)
-                t_ms       = (time.perf_counter() - t_start) * 1000
+                # ── Lecturas (todas FC03) ─────────────────────────────
+                t_start = time.perf_counter()
+                in_regs  = read_register_block(client, in_base,        in_count,        "INPUT mirror")
+                out_regs = read_register_block(client, out_base,       out_count,       "OUTPUT mirror")
+                hr1      = read_register_block(client, HR_BLOCK1_ADDR, HR_BLOCK1_COUNT, "HR block1")
+                hr2      = read_register_block(client, HR_BLOCK2_ADDR, HR_BLOCK2_COUNT, "HR block2")
+                t_ms     = (time.perf_counter() - t_start) * 1000
 
-                values = inputs + outputs
+                input_values  = decode_bits(in_regs,  in_base,  input_tags)
+                output_values = decode_bits(out_regs, out_base, output_tags)
+                values        = input_values + output_values
+                registers     = hr1 + hr2
 
                 connection_status["connected"]      = True
                 connection_status["last_connected"] = datetime.now().strftime("%d/%m/%y %H:%M:%S")
@@ -416,7 +377,7 @@ def start_logger():
 
                 log_modbus.debug(f"Ciclo de lectura completo en {t_ms:.1f} ms")
 
-                # ── Detección de cambios ──────────────────────────────
+                # ── Detección de cambios I/O ──────────────────────────
                 now     = time.time()
                 changes = 0
 
@@ -429,22 +390,21 @@ def start_logger():
 
                         state = "ON" if current else "OFF"
 
-                        save_event(db_conn, tag_names[i], tag_addresses[i], signal_types[i], state, tag_descriptions[i])
+                        save_event(db_conn, tag_names_io[i], tag_addresses_io[i], signal_types_io[i], state, tag_descs_io[i])
                         log_events.info(
-                            f"[{signal_types[i]}] {tag_names[i]} | {tag_addresses[i]} | {state} | {tag_descriptions[i]}"
+                            f"[{signal_types_io[i]}] {tag_names_io[i]} | {tag_addresses_io[i]} | {state} | {tag_descs_io[i]}"
                         )
                         changes += 1
 
-                # ── Holding Registers ─────────────────────────────────
+                # ── Holding Registers analógicos ──────────────────────
                 for k, current in enumerate(registers):
                     if current != previous_registers[k] and (now - last_register_time[k]) > MIN_DELTA:
                         last_register_time[k]   = now
                         previous_registers[k]   = current
-                        idx = TOTAL_SIGNALS + k
 
-                        save_event(db_conn, tag_names[idx], tag_addresses[idx], "REGISTER", str(current), tag_descriptions[idx])
+                        save_event(db_conn, hr_names[k], hr_addresses[k], "REGISTER", str(current), hr_descs[k])
                         log_events.info(
-                            f"[REGISTER] {tag_names[idx]} | {tag_addresses[idx]} | {current} | {tag_descriptions[idx]}"
+                            f"[REGISTER] {hr_names[k]} | {hr_addresses[k]} | {current} | {hr_descs[k]}"
                         )
                         changes += 1
 
