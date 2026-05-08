@@ -1,24 +1,53 @@
-from fastapi import FastAPI, Request, Response, Depends
-from fastapi.responses import FileResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
-from fastapi.staticfiles import StaticFiles
-import sqlite3
-import pandas as pd
-import threading
+"""FastAPI app del datalogger.
+
+Sirve la SPA estática (index.html / login.html) y expone los endpoints `/api/*`
+que consume el frontend portado del proyecto v2. Los endpoints adaptan la
+forma de los datos al schema que espera el JS de v2:
+
+  - /api/status     -> {link: {connected, last_error, last_cycle_ms}, events_total, max_events}
+  - /api/variables  -> [{symbol, address, type, state, description}]    state ∈ {0,1,null}
+  - /api/events     -> {items, total}                                    items con state ∈ {0,1,int}
+  - /api/stats      -> [{symbol, address, description, total, total_on, total_off, last_event}]
+  - /api/sysevents  -> [{type, description, ts}]
+  - /api/export.xlsx/.csv
+
+Los timestamps en la DB se guardan como "YYYY-MM-DD HH:MM:SS.fff" (hora local,
+sin TZ). El frontend envía filtros como ISO UTC; convertimos a local antes de
+comparar contra la DB.
+"""
+
+import csv
+import io
 import logging
-from datetime import datetime
 import os
 import secrets
+import sqlite3
+import threading
+from datetime import datetime, timezone
+from typing import Optional
 
-from modbus_logger import start_logger, connection_status, load_tags_safe, save_system_event
+import pandas as pd
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+from modbus_logger import (
+    MAX_EVENTS,
+    connection_status,
+    load_tags_safe,
+    start_logger,
+)
 
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 logging.getLogger("pymodbus").setLevel(logging.WARNING)
 
-app = FastAPI()
+app = FastAPI(title="Datalogger V2", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
+# Tags cargados una vez al arrancar la app — la planilla no cambia en runtime.
 tags = load_tags_safe()
 
 threading.Thread(target=start_logger, daemon=True).start()
@@ -27,21 +56,105 @@ if os.environ.get("RAILWAY_ENVIRONMENT"):
     from modbus_simulator import start_simulator
     threading.Thread(target=start_simulator, daemon=True).start()
 
-# ── AUTH ──
+# ---------------------------------------------------------------------------
+# AUTH
+# ---------------------------------------------------------------------------
+
 SESSION_TOKEN = secrets.token_hex(32)
 USERS = {
-    os.environ.get("APP_USER", "admin"): os.environ.get("APP_PASSWORD", "admin")
+    os.environ.get("APP_USER", "admin"): os.environ.get("APP_PASSWORD", "admin"),
 }
 
-def check_session(request: Request):
+
+def check_session(request: Request) -> bool:
     return request.cookies.get("session") == SESSION_TOKEN
 
+
+def require_session(request: Request):
+    if not check_session(request):
+        raise HTTPException(status_code=401, detail="No autorizado")
+
+
+# ---------------------------------------------------------------------------
+# UTILIDADES — conversión de timestamps y estados
+# ---------------------------------------------------------------------------
+
+# Whitelist de columnas para sort_by — evita inyección SQL.
+_SORT_COLUMNS = {"id", "address", "tag", "state", "timestamp"}
+
+
+def _iso_to_db_ts(iso: str) -> Optional[str]:
+    """Convierte un ISO ('2026-05-07T13:30:00.000Z' o local) al formato local de la DB.
+
+    La DB guarda 'YYYY-MM-DD HH:MM:SS.fff' en hora local. El frontend manda ISO
+    UTC tras el `new Date(...).toISOString()`. Hacemos parse + conversión a local.
+    """
+    if not iso:
+        return None
+    try:
+        s = iso.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone()  # a TZ local del server
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return None
+
+
+def _db_ts_to_iso(ts: Optional[str]) -> Optional[str]:
+    """'2026-05-07 13:30:00.123' -> '2026-05-07T13:30:00.123' (ISO sin TZ).
+
+    El JS de v2 hace `new Date(iso)` y reformatea — basta con la T en el medio.
+    """
+    if not ts:
+        return None
+    return ts.replace(" ", "T", 1)
+
+
+def _state_to_int(s: Optional[str]) -> Optional[int]:
+    """Convierte el state TEXT de la DB a int. ON->1, OFF->0, num->int, otro->None."""
+    if s is None:
+        return None
+    if s == "ON":
+        return 1
+    if s == "OFF":
+        return 0
+    try:
+        return int(s)
+    except (ValueError, TypeError):
+        return None
+
+
+def _state_param_to_db(val: Optional[str]) -> Optional[str]:
+    """Normaliza el query `state` del front a 'ON'/'OFF' para filtrar en DB."""
+    if val is None or val == "":
+        return None
+    v = val.strip().lower()
+    if v in ("1", "on", "true"):
+        return "ON"
+    if v in ("0", "off", "false"):
+        return "OFF"
+    raise HTTPException(400, f"Valor de state inválido: {val!r}")
+
+
+def _db_connect() -> sqlite3.Connection:
+    conn = sqlite3.connect("events.db")
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+# ---------------------------------------------------------------------------
+# RUTAS HTML
+# ---------------------------------------------------------------------------
+
 @app.get("/login")
-def login_page(request: Request):
+def login_page(request: Request, error: str = ""):
     if check_session(request):
         return RedirectResponse("/", status_code=302)
-    return templates.TemplateResponse(request=request, name="login.html", context={"error": ""}
-)
+    return templates.TemplateResponse(
+        request=request, name="login.html", context={"error": error}
+    )
+
 
 @app.post("/login")
 async def login(request: Request):
@@ -50,13 +163,15 @@ async def login(request: Request):
     password = form.get("password", "")
     if USERS.get(username) == password:
         response = RedirectResponse("/", status_code=302)
-        response.set_cookie(
-            "session", SESSION_TOKEN,
-            httponly=True,
-            samesite="lax",
-        )
+        response.set_cookie("session", SESSION_TOKEN, httponly=True, samesite="lax")
         return response
-    return templates.TemplateResponse(request=request, name="login.html", context={"error": "Usuario o contraseña incorrectos"})
+    return templates.TemplateResponse(
+        request=request,
+        name="login.html",
+        context={"error": "Usuario o contraseña incorrectos"},
+        status_code=401,
+    )
+
 
 @app.get("/logout")
 def logout():
@@ -64,148 +179,312 @@ def logout():
     response.delete_cookie("session")
     return response
 
+
 @app.get("/")
 def home(request: Request):
     if not check_session(request):
         return RedirectResponse("/login", status_code=302)
     return templates.TemplateResponse(request=request, name="index.html", context={})
 
-@app.get("/status")
-def get_status(request: Request):
-    if not check_session(request):
-        return Response(status_code=401)
-    return connection_status
 
-@app.get("/events/count")
-def get_event_counts(request: Request):
-    if not check_session(request):
-        return Response(status_code=401)
-    conn = sqlite3.connect("events.db")
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT tag, address, description,
-               COUNT(*) as total,
-               SUM(CASE WHEN state='ON'  THEN 1 ELSE 0 END) as total_on,
-               SUM(CASE WHEN state='OFF' THEN 1 ELSE 0 END) as total_off,
-               MAX(timestamp) as last_event
-        FROM events
-        GROUP BY tag
-        ORDER BY total DESC
-    """)
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
+@app.get("/healthz")
+def healthz():
+    """Liveness sin auth — apto para systemd/monitores externos."""
+    return {"status": "ok" if connection_status["connected"] else "degraded",
+            "modbus_connected": connection_status["connected"]}
 
-@app.get("/events")
-def get_events(request: Request, limit: int = 100, date_from: str = "", date_to: str = "", tag: str = "", search: str = ""):
-    if not check_session(request):
-        return Response(status_code=401)
-    conn = sqlite3.connect("events.db")
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    query  = "SELECT * FROM events WHERE 1=1"
-    params = []
-    if tag:
-        query += " AND tag=?"
-        params.append(tag)
-    if search:
-        query += " AND (tag LIKE ? OR address LIKE ? OR description LIKE ? OR timestamp LIKE ?)"
-        s = f"%{search}%"
-        params.extend([s, s, s, s])
-    if date_from:
-        try:
-            dt = datetime.strptime(date_from, "%Y-%m-%dT%H:%M")
-            query += " AND timestamp >= ?"
-            params.append(dt.strftime("%Y-%m-%d %H:%M:%S"))
-        except:
-            pass
-    if date_to:
-        try:
-            dt = datetime.strptime(date_to, "%Y-%m-%dT%H:%M")
-            query += " AND timestamp <= ?"
-            params.append(dt.strftime("%Y-%m-%d %H:%M:%S"))
-        except:
-            pass
-    query += " ORDER BY id DESC LIMIT ?"
-    MAX_QUERY_LIMIT = 10_000
-    params.append(min(limit, MAX_QUERY_LIMIT))
-    cursor.execute(query, params)
-    rows = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in rows]
 
-@app.get("/signals")
-def get_signals(request: Request):
-    if not check_session(request):
-        return Response(status_code=401)
-    conn = sqlite3.connect("events.db")
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT tag, state FROM events
-        WHERE id IN (SELECT MAX(id) FROM events GROUP BY tag)
-    """)
-    latest = {row["tag"]: row["state"] for row in cursor.fetchall()}
-    conn.close()
-    return [
-        {
-            "tag":         t["tag"],
+# ---------------------------------------------------------------------------
+# API — schema compatible con el frontend v2
+# ---------------------------------------------------------------------------
+
+@app.get("/api/status", dependencies=[Depends(require_session)])
+def api_status():
+    conn = _db_connect()
+    try:
+        total = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    finally:
+        conn.close()
+    return {
+        "link": {
+            "connected":     connection_status["connected"],
+            "last_error":    connection_status["last_error"],
+            "last_cycle_ms": connection_status["last_cycle_ms"],
+        },
+        "events_total": total,
+        "max_events":   MAX_EVENTS,
+    }
+
+
+@app.get("/api/variables", dependencies=[Depends(require_session)])
+def api_variables():
+    """Snapshot del último estado de cada tag (desde la última fila por tag en events)."""
+    conn = _db_connect()
+    try:
+        cur = conn.execute("""
+            SELECT tag, state FROM events
+            WHERE id IN (SELECT MAX(id) FROM events GROUP BY tag)
+        """)
+        latest = {row["tag"]: row["state"] for row in cur.fetchall()}
+    finally:
+        conn.close()
+
+    out = []
+    for t in tags:
+        st = _state_to_int(latest.get(t["tag"]))
+        out.append({
+            "symbol":      t["tag"],
             "address":     t["address"],
+            "type":        t.get("type", "INPUT"),
+            "state":       st,
             "description": t["description"],
-            "state":       latest.get(t["tag"], "OFF")
-        }
-        for t in tags
-        if not t["address"].startswith("%Q")
-    ]
+        })
+    return out
 
-@app.get("/system-events")
-def get_system_events(request: Request, limit: int = 200):
-    if not check_session(request):
-        return Response(status_code=401)
-    conn = sqlite3.connect("events.db")
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT id, event_type, description, timestamp FROM system_events ORDER BY id DESC LIMIT ?",
-        (min(limit, 10000),)
-    )
-    rows = [dict(r) for r in cursor.fetchall()]
-    conn.close()
-    return rows
 
-@app.get("/export")
-def export_events(request: Request, tag: str = "", search: str = "", date_from: str = "", date_to: str = ""):
-    if not check_session(request):
-        return Response(status_code=401)
-    conn = sqlite3.connect("events.db")
-    query  = "SELECT id, tag, address, state, description, timestamp FROM events WHERE 1=1"
-    params = []
-    if tag:
-        query += " AND tag=?"
-        params.append(tag)
+def _build_events_query(
+    *, address, symbol, description, state, ts_from, ts_to, search,
+    sort_by, order, limit, offset, count_only=False,
+):
+    """Arma SELECT/COUNT con los filtros aplicados. Devuelve (sql, params)."""
+    if sort_by not in _SORT_COLUMNS:
+        raise HTTPException(400, f"sort_by inválido: {sort_by!r}")
+    direction = "ASC" if str(order).lower() == "asc" else "DESC"
+
+    where = []
+    params: list = []
+
+    if address:
+        where.append("address LIKE ?"); params.append(f"%{address}%")
+    if symbol:
+        where.append("tag = ?"); params.append(symbol)
+    if description:
+        where.append("description LIKE ?"); params.append(f"%{description}%")
+    if state is not None:
+        where.append("state = ?"); params.append(state)
+    if ts_from:
+        db_from = _iso_to_db_ts(ts_from)
+        if db_from:
+            where.append("timestamp >= ?"); params.append(db_from)
+    if ts_to:
+        db_to = _iso_to_db_ts(ts_to)
+        if db_to:
+            where.append("timestamp <= ?"); params.append(db_to + ".999")
     if search:
-        query += " AND (tag LIKE ? OR address LIKE ? OR description LIKE ? OR timestamp LIKE ?)"
+        where.append("(tag LIKE ? OR address LIKE ? OR description LIKE ? OR timestamp LIKE ?)")
         s = f"%{search}%"
         params.extend([s, s, s, s])
-    if date_from:
+
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+
+    if count_only:
+        return f"SELECT COUNT(*) FROM events{where_sql}", params
+
+    sql = (
+        "SELECT id, tag, address, signal_type, state, description, timestamp "
+        f"FROM events{where_sql} "
+        f"ORDER BY {sort_by} {direction} "
+        "LIMIT ? OFFSET ?"
+    )
+    params2 = list(params) + [limit, offset]
+    return sql, params2
+
+
+@app.get("/api/events", dependencies=[Depends(require_session)])
+def api_events(
+    address: Optional[str] = None,
+    symbol:  Optional[str] = None,
+    description: Optional[str] = None,
+    state:   Optional[str] = None,
+    ts_from: Optional[str] = None,
+    ts_to:   Optional[str] = None,
+    search:  Optional[str] = None,
+    sort_by: str = Query("id"),
+    order:   str = Query("desc"),
+    limit:   int = Query(50, ge=1, le=5000),
+    offset:  int = Query(0, ge=0),
+):
+    db_state = _state_param_to_db(state)
+    common = dict(
+        address=address, symbol=symbol, description=description, state=db_state,
+        ts_from=ts_from, ts_to=ts_to, search=search,
+        sort_by=sort_by, order=order, limit=limit, offset=offset,
+    )
+
+    conn = _db_connect()
+    try:
+        count_sql, count_params = _build_events_query(**common, count_only=True)
+        total = conn.execute(count_sql, count_params).fetchone()[0]
+        sql, params = _build_events_query(**common)
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+
+    items = [{
+        "id":          r["id"],
+        "address":     r["address"],
+        "symbol":      r["tag"],
+        "state":       _state_to_int(r["state"]),
+        "description": r["description"],
+        "ts":          _db_ts_to_iso(r["timestamp"]),
+    } for r in rows]
+    return {"items": items, "total": total}
+
+
+@app.get("/api/stats", dependencies=[Depends(require_session)])
+def api_stats(
+    ts_from: Optional[str] = None,
+    ts_to:   Optional[str] = None,
+):
+    where = []
+    params: list = []
+    if ts_from:
+        db_from = _iso_to_db_ts(ts_from)
+        if db_from:
+            where.append("timestamp >= ?"); params.append(db_from)
+    if ts_to:
+        db_to = _iso_to_db_ts(ts_to)
+        if db_to:
+            where.append("timestamp <= ?"); params.append(db_to + ".999")
+    where_sql = (" WHERE " + " AND ".join(where)) if where else ""
+
+    conn = _db_connect()
+    try:
+        sql = f"""
+            SELECT tag, address, description,
+                   COUNT(*) as total,
+                   SUM(CASE WHEN state='ON'  THEN 1 ELSE 0 END) as total_on,
+                   SUM(CASE WHEN state='OFF' THEN 1 ELSE 0 END) as total_off,
+                   MAX(timestamp) as last_event
+            FROM events{where_sql}
+            GROUP BY tag
+            ORDER BY total DESC
+        """
+        rows = conn.execute(sql, params).fetchall()
+    finally:
+        conn.close()
+
+    return [{
+        "symbol":      r["tag"],
+        "address":     r["address"],
+        "description": r["description"],
+        "total":       r["total"],
+        "total_on":    r["total_on"],
+        "total_off":   r["total_off"],
+        "last_event":  _db_ts_to_iso(r["last_event"]),
+    } for r in rows]
+
+
+@app.get("/api/sysevents", dependencies=[Depends(require_session)])
+def api_sysevents(limit: int = Query(500, ge=1, le=5000)):
+    conn = _db_connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, event_type, description, timestamp "
+            "FROM system_events ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [{
+        "type":        r["event_type"],
+        "description": r["description"],
+        "ts":          _db_ts_to_iso(r["timestamp"]),
+    } for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# EXPORT
+# ---------------------------------------------------------------------------
+
+def _export_filename(prefix: str, ext: str) -> str:
+    return datetime.now().strftime(f"{prefix}_%Y-%m-%d_%H-%M-%S.{ext}")
+
+
+@app.get("/api/export.xlsx", dependencies=[Depends(require_session)])
+def api_export_xlsx(
+    address: Optional[str] = None,
+    symbol:  Optional[str] = None,
+    description: Optional[str] = None,
+    state:   Optional[str] = None,
+    ts_from: Optional[str] = None,
+    ts_to:   Optional[str] = None,
+    search:  Optional[str] = None,
+    sort_by: str = Query("id"),
+    order:   str = Query("desc"),
+    limit:   int = Query(50_000, ge=1, le=100_000),
+):
+    db_state = _state_param_to_db(state)
+    sql, params = _build_events_query(
+        address=address, symbol=symbol, description=description, state=db_state,
+        ts_from=ts_from, ts_to=ts_to, search=search,
+        sort_by=sort_by, order=order, limit=limit, offset=0,
+    )
+    conn = _db_connect()
+    try:
+        df = pd.read_sql_query(sql, conn, params=params)
+    finally:
+        conn.close()
+    df = df.rename(columns={"tag": "symbol", "timestamp": "ts"})
+    buf = io.BytesIO()
+    df.to_excel(buf, index=False)
+    buf.seek(0)
+    return Response(
+        buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{_export_filename("eventos", "xlsx")}"'},
+    )
+
+
+@app.get("/api/export.csv", dependencies=[Depends(require_session)])
+def api_export_csv(
+    address: Optional[str] = None,
+    symbol:  Optional[str] = None,
+    description: Optional[str] = None,
+    state:   Optional[str] = None,
+    ts_from: Optional[str] = None,
+    ts_to:   Optional[str] = None,
+    search:  Optional[str] = None,
+    sort_by: str = Query("id"),
+    order:   str = Query("desc"),
+    limit:   int = Query(1_000_000, ge=1, le=1_000_000),
+):
+    """CSV en streaming — apto para el FIFO completo (1M filas) sin OOM."""
+    db_state = _state_param_to_db(state)
+    sql, params = _build_events_query(
+        address=address, symbol=symbol, description=description, state=db_state,
+        ts_from=ts_from, ts_to=ts_to, search=search,
+        sort_by=sort_by, order=order, limit=limit, offset=0,
+    )
+
+    def _gen():
+        buf = io.StringIO()
+        w = csv.writer(buf, lineterminator="\n")
+        w.writerow(["id", "ts", "address", "symbol", "description", "state"])
+        yield buf.getvalue()
+        buf.seek(0); buf.truncate()
+
+        conn = _db_connect()
         try:
-            dt = datetime.strptime(date_from, "%Y-%m-%dT%H:%M")
-            query += " AND timestamp >= ?"
-            params.append(dt.strftime("%Y-%m-%d %H:%M:%S"))
-        except:
-            pass
-    if date_to:
-        try:
-            dt = datetime.strptime(date_to, "%Y-%m-%dT%H:%M")
-            query += " AND timestamp <= ?"
-            params.append(dt.strftime("%Y-%m-%d %H:%M:%S"))
-        except:
-            pass
-    query += " ORDER BY id DESC"
-    df = pd.read_sql_query(query, conn, params=params)
-    conn.close()
-    file = "events_export.xlsx"
-    df.to_excel(file, index=False)
-    nombre = datetime.now().strftime("eventos_%d-%m-%Y_%H-%M-%S.xlsx")
-    return FileResponse(file, filename=nombre)
+            cur = conn.execute(sql, params)
+            n = 0
+            for r in cur:
+                w.writerow([
+                    r["id"], _db_ts_to_iso(r["timestamp"]) or "",
+                    r["address"], r["tag"], r["description"] or "",
+                    r["state"],
+                ])
+                n += 1
+                if n % 1000 == 0:
+                    yield buf.getvalue()
+                    buf.seek(0); buf.truncate()
+            if buf.tell():
+                yield buf.getvalue()
+        finally:
+            conn.close()
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{_export_filename("eventos", "csv")}"'},
+    )

@@ -84,7 +84,8 @@ connection_status = {
     "connected":      False,
     "last_connected": None,
     "last_error":     None,
-    "retries":        0
+    "retries":        0,
+    "last_cycle_ms":  None,
 }
 
 event_counter = 0
@@ -374,6 +375,7 @@ def start_logger():
                 connection_status["last_connected"] = datetime.now().strftime("%d/%m/%y %H:%M:%S")
                 connection_status["last_error"]     = None
                 connection_status["retries"]        = 0
+                connection_status["last_cycle_ms"]  = round(t_ms, 1)
 
                 log_modbus.debug(f"Ciclo de lectura completo en {t_ms:.1f} ms")
 
