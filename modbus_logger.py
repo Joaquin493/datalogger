@@ -51,8 +51,8 @@ log_events = logging.getLogger("plc_logger.events")
 # CONFIGURACIÓN
 # ---------------------------------------------------------------------------
 
-PLC_IP         = "192.168.200.10"
-PLC_PORT       = 502
+PLC_IP         = os.environ.get("PLC_IP", "192.168.200.10")
+PLC_PORT       = int(os.environ.get("PLC_PORT", "502"))
 MAX_EVENTS     = 1_000_000
 # Schneider M221: por default el server Modbus responde con ID 255.
 # Si en EcoStruxure Machine Expert Basic se habilita "Modbus Mapping",
