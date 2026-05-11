@@ -91,9 +91,9 @@ Abrir http://localhost:8000 (login `admin` / `admin`).
 
 ### 1. Pre-requisitos en la PC del datalogger
 
-- Windows 10/11 (o Linux) con Python 3.10+ instalado.
+- Linux con Python 3.10+ (o Windows 10/11) instalado.
 - IP fija en la red del PLC y firewall que permita el puerto **8000** entrante (para que los clientes accedan).
-- Acceso de red al PLC en puerto **502**. Verificar con: `Test-NetConnection 10.10.145.244 -Port 502` (PowerShell).
+- Acceso de red al PLC en puerto **502**. Verificar con: `nc -vz 10.10.145.244 502` (Linux) o `Test-NetConnection 10.10.145.244 -Port 502` (Windows / PowerShell).
 
 ### 2. Bajar el repo
 
@@ -115,20 +115,28 @@ Abrir `Programa_TTA_IRSA_convertido v4.xlsx`, hoja `Sheet2`. Cada fila debe tene
 
 ### 4. (Opcional) Cambiar credenciales de login
 
-La IP del PLC y el puerto ya están hardcodeados en el código apuntando a prod, así que **no hace falta ningún script de arranque ni archivo `.env`**. Solo si querés cambiar el usuario/contraseña del login web, seteá las env vars de forma persistente con `setx` (una sola vez):
+La IP del PLC y el puerto ya están hardcodeados en el código apuntando a prod, así que **no hace falta ningún archivo `.env`**. Solo si querés cambiar el usuario/contraseña del login web:
 
-```powershell
-setx APP_USER "operador"
-setx APP_PASSWORD "una-clave-fuerte-aca"
-```
+- **Linux con systemd:** descomentar las líneas `Environment=APP_USER=...` y `Environment=APP_PASSWORD=...` en el unit file de la sección 6, recargar y reiniciar:
+  ```bash
+  sudo systemctl daemon-reload
+  sudo systemctl restart datalogger
+  ```
+- **Windows:** setear las env vars de forma persistente con `setx` (una sola vez, persiste para sesiones futuras del usuario):
+  ```powershell
+  setx APP_USER "operador"
+  setx APP_PASSWORD "una-clave-fuerte-aca"
+  ```
 
-> Los valores persisten para sesiones futuras del usuario. Las env vars **no se commitean** porque no están en archivos del repo.
+> Las credenciales **no se commitean** porque viven solo en el systemd unit (local a la PC del datalogger) o en env vars del usuario.
 
 ### 5. Primera corrida manual (smoke test)
 
-```powershell
-python -m uvicorn main:app --host 0.0.0.0 --port 8000
+```bash
+python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
+
+(en Windows: `python -m uvicorn ...`)
 
 En la consola debería aparecer (cantidades exactas según `tags_active.xlsx`):
 
@@ -146,51 +154,63 @@ Estado inicial sembrado (N+M signals) — los próximos ciclos detectan cambios
 
 Si en cambio aparece `Lectura error: Modbus Error: [Input/Output] No Response received from the remote unit`, revisar:
 
-1. Que el PLC esté energizado y respondiendo: `Test-NetConnection 10.10.145.244 -Port 502`
+1. Que el PLC esté energizado y respondiendo: `nc -vz 10.10.145.244 502` (Linux) o `Test-NetConnection 10.10.145.244 -Port 502` (Windows).
 2. Que el `DEVICE_ID` coincida con el del M221 (default 255 si no hay Modbus Mapping habilitado).
 3. Que la PC tenga ruta a la red del PLC.
 
 Verificar desde otra PC de la red: `http://<IP-de-esta-PC>:8000`. Login con las credenciales (default `admin`/`admin` si no las cambiaste con `setx`).
 
-### 6. Configurar autoarranque al boot (Windows — Tarea Programada)
+### 6. Configurar autoarranque al boot (Linux — systemd)
 
-Para que la app se levante sola después de un reinicio:
+Crear el unit file `/etc/systemd/system/datalogger.service`:
 
-```powershell
-# Como administrador
-$action  = New-ScheduledTaskAction -Execute "python.exe" `
-  -Argument "-m uvicorn main:app --host 0.0.0.0 --port 8000" `
-  -WorkingDirectory "C:\Users\joaqu\Documents\datalogger"
+```ini
+[Unit]
+Description=Datalogger Modbus M221
+After=network-online.target
+Wants=network-online.target
 
-$trigger  = New-ScheduledTaskTrigger -AtStartup
-$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
-$settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
-  -StartWhenAvailable -AllowStartIfOnBatteries
+[Service]
+Type=simple
+User=datalogger
+WorkingDirectory=/opt/datalogger
+ExecStart=/usr/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=5
+# Credenciales opcionales — si las querés cambiar respecto del default admin/admin:
+# Environment=APP_USER=operador
+# Environment=APP_PASSWORD=una-clave-fuerte
 
-Register-ScheduledTask -TaskName "Datalogger" `
-  -Action $action -Trigger $trigger -Principal $principal -Settings $settings
+[Install]
+WantedBy=multi-user.target
 ```
 
-Probar el reinicio: `shutdown /r /t 0`. Después del boot, `http://<IP>:8000` debería responder en ~30 s.
+Habilitar y arrancar:
 
-> **Linux / IOT2050 / Raspberry Pi:** usar `systemd`. Crear `/etc/systemd/system/datalogger.service`:
-> ```ini
-> [Unit]
-> Description=Datalogger Modbus M221
-> After=network-online.target
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now datalogger
+sudo systemctl status datalogger      # ver estado
+sudo journalctl -u datalogger -f      # ver logs en vivo
+```
+
+Probar el reinicio: `sudo reboot`. Después del boot, `http://<IP>:8000` debería responder en ~10-30 s.
+
+> **Windows (alternativa — Tarea Programada):**
+> ```powershell
+> # Como administrador
+> $action  = New-ScheduledTaskAction -Execute "python.exe" `
+>   -Argument "-m uvicorn main:app --host 0.0.0.0 --port 8000" `
+>   -WorkingDirectory "C:\Users\joaqu\Documents\datalogger"
 >
-> [Service]
-> Type=simple
-> WorkingDirectory=/opt/datalogger
-> EnvironmentFile=/opt/datalogger/.env
-> ExecStart=/usr/bin/python3 -m uvicorn main:app --host 0.0.0.0 --port 8000
-> Restart=on-failure
-> RestartSec=5
+> $trigger  = New-ScheduledTaskTrigger -AtStartup
+> $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
+> $settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1) `
+>   -StartWhenAvailable -AllowStartIfOnBatteries
 >
-> [Install]
-> WantedBy=multi-user.target
+> Register-ScheduledTask -TaskName "Datalogger" `
+>   -Action $action -Trigger $trigger -Principal $principal -Settings $settings
 > ```
-> `sudo systemctl enable --now datalogger`
 
 ### 7. Verificar acceso de los clientes
 
@@ -203,20 +223,30 @@ Desde una PC operadora en la misma LAN: `http://<IP-del-server>:8000`.
 
 `events.db` es la única fuente de los eventos. Hacer copias periódicas. Como SQLite está en modo WAL, la forma segura es:
 
-```powershell
+```bash
 # Backup en caliente (no requiere parar la app)
-python -c "import sqlite3; src=sqlite3.connect('events.db'); dst=sqlite3.connect('events_backup.db'); src.backup(dst); src.close(); dst.close()"
+python3 -c "import sqlite3; src=sqlite3.connect('events.db'); dst=sqlite3.connect('events_backup.db'); src.backup(dst); src.close(); dst.close()"
 ```
 
-Tarea programada diaria con esto + copia a un network share / OneDrive.
+Cron diario con esto + copia a un network share / NAS. Ejemplo (`crontab -e`):
+
+```
+0 3 * * * cd /opt/datalogger && python3 -c "import sqlite3; src=sqlite3.connect('events.db'); dst=sqlite3.connect('/mnt/backup/events_$(date +\%Y\%m\%d).db'); src.backup(dst); src.close(); dst.close()"
+```
 
 ### 9. Logs
 
 Logs rotativos en `logs/logger.log` (5 archivos × 1 MB). Para verlos en vivo:
 
-```powershell
-Get-Content logs/logger.log -Wait -Tail 50
+```bash
+# Si arrancás vía systemd, los logs van también a journal:
+sudo journalctl -u datalogger -f
+
+# O el archivo directo:
+tail -n 50 -f logs/logger.log
 ```
+
+(en Windows: `Get-Content logs/logger.log -Wait -Tail 50`)
 
 `logs/` está en `.gitignore` — no se versiona.
 
@@ -229,10 +259,12 @@ Get-Content logs/logger.log -Wait -Tail 50
 | Corregir symbol/descripción/tipo de un tag | Pestaña **Sistema** → fila → **Editar**. Se guarda como override en la DB, no toca el xlsx. Recarga en caliente. |
 | Agregar tags nuevos (cambió el programa del PLC) | Regenerar xlsx desde EcoStruxure → **Sistema → ⬆ Subir nuevo xlsx**. Mostrar preview → confirmar. |
 | Volver a una versión anterior del xlsx | **Sistema → Backups…** → Restaurar. El activo se respalda primero. |
-| Cambiar credenciales | `setx APP_USER ...` + `setx APP_PASSWORD ...` → reiniciar la tarea programada |
+| Cambiar credenciales | Editar `/etc/systemd/system/datalogger.service` (líneas `Environment=`) → `sudo systemctl daemon-reload && sudo systemctl restart datalogger` |
 | Ver eventos viejos | El sistema aplica FIFO con tope de 1.000.000 registros (~200-300 MB). Cuando se supera, borra los más antiguos. Hacer backups periódicos para conservar más historia. |
 | Ver latencia del PLC | `http://<IP>:8000/healthz` o el header del dashboard |
-| Reiniciar app | `Restart-ScheduledTask -TaskName Datalogger` |
+| Reiniciar app | `sudo systemctl restart datalogger` |
+| Ver estado del servicio | `sudo systemctl status datalogger` |
+| Ver logs en vivo | `sudo journalctl -u datalogger -f` |
 
 ---
 
