@@ -55,10 +55,12 @@ pip install -r requirements.txt
 
 | Variable | Default | Descripción |
 |---|---|---|
-| `PLC_IP` | `192.168.200.10` | IP del PLC M221 |
+| `PLC_IP` | `10.10.145.244` | IP del PLC M221 (default = la red de prod) |
 | `PLC_PORT` | `502` | Puerto Modbus TCP |
 | `APP_USER` | `admin` | Usuario para login web |
 | `APP_PASSWORD` | `admin` | Contraseña del usuario |
+
+> Los defaults ya apuntan al PLC real, así que en prod no hace falta setear env vars para arrancar — el único motivo para tocarlas es cambiar las credenciales de login.
 
 En `modbus_logger.py` también se puede ajustar:
 - `DEVICE_ID` (línea 60) — `1` por default. Si en EcoStruxure Machine Expert Basic no está habilitado "Modbus Mapping" del M221, cambiar a `255`.
@@ -91,7 +93,7 @@ Abrir http://localhost:8000 (login `admin` / `admin`).
 
 - Windows 10/11 (o Linux) con Python 3.10+ instalado.
 - IP fija en la red del PLC y firewall que permita el puerto **8000** entrante (para que los clientes accedan).
-- Acceso de red al PLC en puerto **502**. Verificar con: `Test-NetConnection 192.168.200.10 -Port 502` (PowerShell).
+- Acceso de red al PLC en puerto **502**. Verificar con: `Test-NetConnection 10.10.145.244 -Port 502` (PowerShell).
 
 ### 2. Bajar el repo
 
@@ -111,49 +113,44 @@ Abrir `Programa_TTA_IRSA_convertido v4.xlsx`, hoja `Sheet2`. Cada fila debe tene
 
 > Si cambia el mapeo en el PLC, regenerar la planilla desde EcoStruxure y subirla desde la pestaña **Sistema → Configuración de tags → ⬆ Subir nuevo xlsx**. La UI muestra un preview con el diff (agregados / eliminados / modificados / overrides huérfanos) antes de aplicar, y el archivo anterior queda respaldado automáticamente. La recarga es en caliente — no hace falta reiniciar el servicio.
 
-### 4. Configurar credenciales y conexión
+### 4. (Opcional) Cambiar credenciales de login
 
-Crear un archivo `start.ps1` en la carpeta del proyecto:
+La IP del PLC y el puerto ya están hardcodeados en el código apuntando a prod, así que **no hace falta ningún script de arranque ni archivo `.env`**. Solo si querés cambiar el usuario/contraseña del login web, seteá las env vars de forma persistente con `setx` (una sola vez):
 
 ```powershell
-# start.ps1
-$env:PLC_IP       = "192.168.200.10"
-$env:PLC_PORT     = "502"
-$env:APP_USER     = "operador"
-$env:APP_PASSWORD = "una-clave-fuerte-aca"
-
-python -m uvicorn main:app --host 0.0.0.0 --port 8000
+setx APP_USER "operador"
+setx APP_PASSWORD "una-clave-fuerte-aca"
 ```
 
-> ⚠️ **No commitear `start.ps1` con la contraseña.** El `.gitignore` ya excluye `.env`; si querés versionar el script de arranque, sacá las credenciales y leelas de un archivo aparte o de Credentials Manager de Windows.
+> Los valores persisten para sesiones futuras del usuario. Las env vars **no se commitean** porque no están en archivos del repo.
 
 ### 5. Primera corrida manual (smoke test)
 
 ```powershell
-.\start.ps1
+python -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
 En la consola debería aparecer (cantidades exactas según `tags_active.xlsx`):
 
 ```
 LOGGER INICIADO
-  PLC:              192.168.200.10:502
+  PLC:              10.10.145.244:502
   Device ID:        1
   Inputs:           N  (espejo en %MW<base>..%MW<base+count-1>)
   Outputs:          M  (espejo en %MW<base>..%MW<base+count-1>)
   Total signals:    N+M
   ...
-Conexión establecida con 192.168.200.10:502
+Conexión establecida con 10.10.145.244:502
 Estado inicial sembrado (N+M signals) — los próximos ciclos detectan cambios
 ```
 
 Si en cambio aparece `Lectura error: Modbus Error: [Input/Output] No Response received from the remote unit`, revisar:
 
-1. Que el PLC esté energizado y respondiendo: `Test-NetConnection 192.168.200.10 -Port 502`
+1. Que el PLC esté energizado y respondiendo: `Test-NetConnection 10.10.145.244 -Port 502`
 2. Que el `DEVICE_ID` coincida con el del M221 (default 255 si no hay Modbus Mapping habilitado).
-3. Que `PLC_IP` apunte a la IP correcta.
+3. Que la PC tenga ruta a la red del PLC.
 
-Verificar desde otra PC de la red: `http://<IP-de-esta-PC>:8000`. Login con las credenciales del paso 4.
+Verificar desde otra PC de la red: `http://<IP-de-esta-PC>:8000`. Login con las credenciales (default `admin`/`admin` si no las cambiaste con `setx`).
 
 ### 6. Configurar autoarranque al boot (Windows — Tarea Programada)
 
@@ -161,8 +158,8 @@ Para que la app se levante sola después de un reinicio:
 
 ```powershell
 # Como administrador
-$action  = New-ScheduledTaskAction -Execute "powershell.exe" `
-  -Argument "-NoProfile -ExecutionPolicy Bypass -File C:\Users\joaqu\Documents\datalogger\start.ps1" `
+$action  = New-ScheduledTaskAction -Execute "python.exe" `
+  -Argument "-m uvicorn main:app --host 0.0.0.0 --port 8000" `
   -WorkingDirectory "C:\Users\joaqu\Documents\datalogger"
 
 $trigger  = New-ScheduledTaskTrigger -AtStartup
@@ -232,7 +229,7 @@ Get-Content logs/logger.log -Wait -Tail 50
 | Corregir symbol/descripción/tipo de un tag | Pestaña **Sistema** → fila → **Editar**. Se guarda como override en la DB, no toca el xlsx. Recarga en caliente. |
 | Agregar tags nuevos (cambió el programa del PLC) | Regenerar xlsx desde EcoStruxure → **Sistema → ⬆ Subir nuevo xlsx**. Mostrar preview → confirmar. |
 | Volver a una versión anterior del xlsx | **Sistema → Backups…** → Restaurar. El activo se respalda primero. |
-| Cambiar credenciales | Editar `start.ps1` → reiniciar la tarea programada |
+| Cambiar credenciales | `setx APP_USER ...` + `setx APP_PASSWORD ...` → reiniciar la tarea programada |
 | Ver eventos viejos | El sistema aplica FIFO con tope de 1.000.000 registros (~200-300 MB). Cuando se supera, borra los más antiguos. Hacer backups periódicos para conservar más historia. |
 | Ver latencia del PLC | `http://<IP>:8000/healthz` o el header del dashboard |
 | Reiniciar app | `Restart-ScheduledTask -TaskName Datalogger` |
