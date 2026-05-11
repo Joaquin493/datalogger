@@ -46,7 +46,7 @@ const signalNodes = new Map();  // address -> { root, pill, desc, currentState }
 
 // Timers
 const timers = { status: null, signals: null, eventsTail: null };
-const debouncers = { sig: null, ev: null, cnt: null };
+const debouncers = { sig: null, ev: null, cnt: null, tags: null };
 
 // ---------- utilidades ----------
 const $ = (id) => document.getElementById(id);
@@ -96,6 +96,33 @@ async function api(path) {
   }
 }
 
+// fetch para operaciones de escritura (PATCH/POST/DELETE) con body JSON o FormData.
+// Timeout más generoso por uploads.
+async function apiMutate(path, { method = 'POST', json, form } = {}) {
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), 30000);
+  const opts = { method, credentials: 'same-origin', signal: ctrl.signal };
+  if (json !== undefined) {
+    opts.headers = { 'Content-Type': 'application/json' };
+    opts.body = JSON.stringify(json);
+  } else if (form) {
+    opts.body = form;
+  }
+  try {
+    const r = await fetch(path, opts);
+    if (r.status === 401) { window.location.replace('/login'); throw new Error('unauth'); }
+    let data = null;
+    try { data = await r.json(); } catch (_) { /* respuesta no-JSON */ }
+    if (!r.ok) {
+      const msg = (data && (data.detail || data.message)) || `HTTP ${r.status}`;
+      throw new Error(msg);
+    }
+    return data;
+  } finally {
+    clearTimeout(to);
+  }
+}
+
 // ---------- tabs ----------
 function switchTab(name) {
   state.currentTab = name;
@@ -112,7 +139,7 @@ function switchTab(name) {
   // Carga datos sólo al entrar al panel, y reconfigura el polling.
   if (name === 'events')    loadEvents();
   if (name === 'counts')    loadCounts();
-  if (name === 'sysevents') loadSysEvents();
+  if (name === 'sysevents') { loadSysEvents(); loadTags(); }
   reconfigureTimers();
 }
 
@@ -608,6 +635,295 @@ async function loadSysEvents() {
   }
 }
 
+// ---------- tags admin (pestaña Sistema) ----------
+const tagsState = {
+  data: { items: [], count: 0, overrides: 0, active_xlsx: '', active_mtime: null },
+  search: '',
+  onlyOverridden: false,
+  editing: null,  // address de la fila en edición
+};
+
+async function loadTags() {
+  setLoading('tags-loading', true);
+  try {
+    const { data } = await api('/api/tags');
+    tagsState.data = data;
+    $('tags-active-file').textContent = data.active_xlsx || '—';
+    $('tags-active-mtime').textContent = data.active_mtime ? fmtDateTime(data.active_mtime) : '—';
+    $('tags-last-edit').textContent  = data.last_override_at ? fmtDateTime(data.last_override_at) : 'nunca';
+    $('tags-count').textContent = data.count;
+    $('tags-overrides').textContent = data.overrides;
+    renderTags();
+  } catch (e) {
+    showTagsMsg('Error cargando tags: ' + (e.message || 'fetch'), 'error');
+  } finally {
+    setLoading('tags-loading', false);
+  }
+}
+
+function renderTags() {
+  const q = tagsState.search.toLowerCase();
+  const onlyOv = tagsState.onlyOverridden;
+  const rows = tagsState.data.items.filter((t) => {
+    if (onlyOv && !t.overridden) return false;
+    if (!q) return true;
+    const hay = `${t.address} ${t.symbol} ${t.description || ''}`.toLowerCase();
+    return hay.includes(q);
+  });
+  const tb = $('tags-body');
+  const empty = $('tags-empty');
+  if (!rows.length) {
+    tb.innerHTML = '';
+    empty.hidden = false;
+    empty.textContent = onlyOv ? 'Sin overrides activos' : (q ? 'Sin coincidencias' : 'Sin tags');
+    return;
+  }
+  empty.hidden = true;
+  tb.innerHTML = rows.map((t) => `
+    <tr class="${t.overridden ? 'tag-overridden' : ''}">
+      <td class="addr mono">${esc(t.address)}</td>
+      <td class="tag">${esc(t.symbol)}${t.overridden && t.symbol !== t.base_symbol ? ` <span class="ov-badge" title="Base: ${esc(t.base_symbol)}">★</span>` : ''}</td>
+      <td class="desc">${esc(t.description || '')}${t.overridden && (t.description || '') !== (t.base_description || '') ? ` <span class="ov-badge" title="Base: ${esc(t.base_description || '—')}">★</span>` : ''}</td>
+      <td>${esc(t.type)}${t.overridden && t.type !== t.base_type ? ` <span class="ov-badge" title="Base: ${esc(t.base_type)}">★</span>` : ''}</td>
+      <td class="row-actions">
+        <button type="button" class="btn btn-small" data-edit="${esc(t.address)}">Editar</button>
+        ${t.overridden ? `<button type="button" class="btn btn-small btn-danger" data-reset="${esc(t.address)}">Resetear</button>` : ''}
+      </td>
+    </tr>`).join('');
+}
+
+function showTagsMsg(text, kind = 'info') {
+  const el = $('tags-upload-msg');
+  el.textContent = text;
+  el.className = 'sys-msg ' + kind;
+  el.hidden = false;
+  setTimeout(() => { el.hidden = true; }, 5000);
+}
+
+function openEditModal(address) {
+  const t = tagsState.data.items.find((x) => x.address === address);
+  if (!t) return;
+  tagsState.editing = address;
+  $('edit-address').textContent = address;
+  $('edit-symbol').value = t.symbol || '';
+  $('edit-description').value = t.description || '';
+  $('edit-type').value = t.type === 'OUTPUT' ? 'OUTPUT' : 'INPUT';
+  $('edit-base-hint').innerHTML =
+    `<strong>Valores base (xlsx):</strong> ${esc(t.base_symbol)} · ${esc(t.base_description || '—')} · ${esc(t.base_type)}`;
+  $('btn-edit-reset').hidden = !t.overridden;
+  openModal('modal-edit-tag');
+  setTimeout(() => $('edit-symbol').focus(), 50);
+}
+
+async function saveEdit() {
+  const address = tagsState.editing;
+  if (!address) return;
+  const payload = {
+    symbol:      $('edit-symbol').value.trim() || null,
+    description: $('edit-description').value,
+    type:        $('edit-type').value,
+  };
+  try {
+    await apiMutate('/api/tags/' + encodeURIComponent(address), { method: 'PATCH', json: payload });
+    closeModal('modal-edit-tag');
+    showTagsMsg(`Override guardado para ${address}.`, 'ok');
+    await loadTags();
+  } catch (e) {
+    showTagsMsg('Error: ' + e.message, 'error');
+  }
+}
+
+async function resetOverride(address) {
+  if (!confirm(`Quitar override de ${address}? Vuelve al valor del xlsx.`)) return;
+  try {
+    await apiMutate('/api/tags/' + encodeURIComponent(address) + '/override', { method: 'DELETE' });
+    closeModal('modal-edit-tag');
+    showTagsMsg(`Override eliminado para ${address}.`, 'ok');
+    await loadTags();
+  } catch (e) {
+    showTagsMsg('Error: ' + e.message, 'error');
+  }
+}
+
+// Estado del preview en curso (token de pending + nombre original del archivo).
+const previewState = { token: null, filename: null };
+
+async function uploadXlsx(file) {
+  if (!file) return;
+  openModal('modal-preview');
+  $('prev-filename').textContent = file.name;
+  $('prev-loading').hidden = false;
+  $('prev-errors').hidden = true;
+  $('prev-warnings').hidden = true;
+  $('prev-summary').hidden = true;
+  $('prev-details').hidden = true;
+  $('btn-prev-confirm').disabled = true;
+  previewState.token = null;
+  previewState.filename = file.name;
+  $('upload-xlsx-input').value = '';
+
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const data = await apiMutate('/api/tags/preview', { form: fd });
+    previewState.token = data.pending_id;
+    renderPreview(data);
+  } catch (e) {
+    $('prev-loading').hidden = true;
+    const el = $('prev-errors');
+    el.textContent = 'Error: ' + e.message;
+    el.hidden = false;
+  }
+}
+
+function renderPreview(data) {
+  $('prev-loading').hidden = true;
+  const s = data.summary;
+  $('prev-old').textContent       = s.old_count;
+  $('prev-new').textContent       = s.new_count;
+  $('prev-unchanged').textContent = s.unchanged;
+  $('prev-added').textContent     = s.added;
+  $('prev-removed').textContent   = s.removed;
+  $('prev-modified').textContent  = s.modified;
+  $('prev-orph').textContent      = s.orphan_overrides;
+  $('prev-summary').hidden = false;
+
+  // Errores / warnings
+  if (data.errors && data.errors.length) {
+    const el = $('prev-errors');
+    el.innerHTML = '<strong>No se puede aplicar:</strong><ul style="margin:4px 0 0 18px">' +
+      data.errors.map((m) => `<li>${esc(m)}</li>`).join('') + '</ul>';
+    el.hidden = false;
+  }
+  if (data.warnings && data.warnings.length) {
+    const el = $('prev-warnings');
+    el.innerHTML = '<strong>Atención:</strong><ul style="margin:4px 0 0 18px">' +
+      data.warnings.map((m) => `<li>${esc(m)}</li>`).join('') + '</ul>';
+    el.hidden = false;
+  }
+
+  // Listas detalladas
+  $('prev-added-count').textContent    = data.added.length;
+  $('prev-removed-count').textContent  = data.removed.length;
+  $('prev-modified-count').textContent = data.modified.length;
+  $('prev-orph-count').textContent     = data.orphan_overrides.length;
+
+  $('prev-added-body').innerHTML = data.added.map((t) => `
+    <tr><td class="mono">${esc(t.address)}</td><td>${esc(t.symbol)}</td><td>${esc(t.description || '')}</td><td>${esc(t.type)}</td></tr>
+  `).join('') || '<tr><td colspan="4" class="ts">—</td></tr>';
+
+  $('prev-removed-body').innerHTML = data.removed.map((t) => `
+    <tr><td class="mono">${esc(t.address)}</td><td>${esc(t.symbol)}</td><td>${esc(t.description || '')}</td><td>${esc(t.type)}</td></tr>
+  `).join('') || '<tr><td colspan="4" class="ts">—</td></tr>';
+
+  $('prev-modified-body').innerHTML = data.modified.map((m) => `
+    <tr>
+      <td class="mono">${esc(m.address)}</td>
+      <td>${m.fields.map((f) => `<span class="diff-field">${esc(f)}</span>`).join(' ')}</td>
+      <td class="diff-old">${esc(m.old.symbol)} · ${esc(m.old.description || '')} · ${esc(m.old.type)} · ${esc(m.old.flag_hr)}</td>
+      <td class="diff-new">${esc(m.new.symbol)} · ${esc(m.new.description || '')} · ${esc(m.new.type)} · ${esc(m.new.flag_hr)}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="4" class="ts">—</td></tr>';
+
+  $('prev-orph-list').textContent = data.orphan_overrides.join(', ') || '—';
+
+  $('prev-details').hidden = false;
+
+  // Botón confirm: solo si no hay errores.
+  $('btn-prev-confirm').disabled = !data.ok;
+}
+
+async function confirmPreviewUpload() {
+  if (!previewState.token) return;
+  $('btn-prev-confirm').disabled = true;
+  try {
+    const r = await apiMutate('/api/tags/upload/confirm', {
+      json: { pending_id: previewState.token },
+    });
+    closeModal('modal-preview');
+    const s = r.summary;
+    showTagsMsg(
+      `Reemplazo aplicado: ${s.added} agregados, ${s.removed} eliminados, ${s.modified} modificados. Backup: ${r.backup || '—'}.`,
+      'ok'
+    );
+    previewState.token = null;
+    await loadTags();
+  } catch (e) {
+    const el = $('prev-errors');
+    el.textContent = 'Error al confirmar: ' + e.message;
+    el.hidden = false;
+    $('btn-prev-confirm').disabled = false;
+  }
+}
+
+async function cancelPreviewUpload() {
+  const t = previewState.token;
+  previewState.token = null;
+  if (!t) return;
+  try { await apiMutate('/api/tags/preview/' + encodeURIComponent(t), { method: 'DELETE' }); }
+  catch (_) { /* no critical */ }
+}
+
+async function openBackupsModal() {
+  openModal('modal-backups');
+  const tb = $('backups-body');
+  tb.innerHTML = '<tr><td colspan="4" class="ts">Cargando…</td></tr>';
+  try {
+    const { data } = await api('/api/tags/backups');
+    const rows = [];
+    if (data.active) {
+      const a = data.active;
+      rows.push(`
+        <tr class="active-row">
+          <td class="mono">${esc(a.name)} <span class="ov-badge" title="En uso">●</span></td>
+          <td class="ts">${esc(fmtDateTime(a.mtime))}</td>
+          <td>${a.tags != null ? a.tags : '<span class="bad">inválido</span>'}</td>
+          <td class="row-actions">
+            <a class="btn btn-small" href="/api/tags/download">⬇</a>
+            <span class="hint-inline">en uso</span>
+          </td>
+        </tr>`);
+    }
+    for (const b of data.items) {
+      rows.push(`
+        <tr>
+          <td class="mono">${esc(b.name)}</td>
+          <td class="ts">${esc(fmtDateTime(b.mtime))}</td>
+          <td>${b.tags != null ? b.tags : '<span class="bad">inválido</span>'}</td>
+          <td class="row-actions">
+            <a class="btn btn-small" href="/api/tags/download/${encodeURIComponent(b.name)}">⬇</a>
+            <button type="button" class="btn btn-small" data-rollback="${esc(b.name)}" ${b.valid ? '' : 'disabled'}>Restaurar</button>
+          </td>
+        </tr>`);
+    }
+    tb.innerHTML = rows.join('');
+    const empty = $('backups-empty');
+    if (!data.items.length) {
+      empty.hidden = false;
+      empty.textContent = 'Aún no hay backups. Se crean automáticamente al subir un xlsx nuevo o hacer rollback.';
+    } else {
+      empty.hidden = true;
+    }
+  } catch (e) {
+    tb.innerHTML = `<tr><td colspan="4" class="bad">Error: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function rollbackTo(name) {
+  if (!confirm(`Restaurar el backup "${name}" como xlsx activo? El actual se respalda primero.`)) return;
+  try {
+    const r = await apiMutate('/api/tags/rollback', { method: 'POST', json: { backup: name } });
+    closeModal('modal-backups');
+    showTagsMsg(`Restaurado ${r.restored}. Backup previo: ${r.backup || '—'}.`, 'ok');
+    await loadTags();
+  } catch (e) {
+    showTagsMsg('Error en rollback: ' + e.message, 'error');
+  }
+}
+
+function openModal(id)  { $(id).hidden = false; }
+function closeModal(id) { $(id).hidden = true; }
+
 // ---------- tema claro/oscuro ----------
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
@@ -770,6 +1086,51 @@ function wireEvents() {
 
   // Sys events
   $('btn-reload-sys').addEventListener('click', loadSysEvents);
+
+  // Tags admin
+  $('btn-reload-tags').addEventListener('click', loadTags);
+  $('tags-search').addEventListener('input', () => {
+    clearTimeout(debouncers.tags);
+    debouncers.tags = setTimeout(() => {
+      tagsState.search = $('tags-search').value.trim();
+      renderTags();
+    }, SEARCH_DEBOUNCE_MS);
+  });
+  $('tags-only-overridden').addEventListener('change', (e) => {
+    tagsState.onlyOverridden = e.target.checked;
+    renderTags();
+  });
+  $('tags-body').addEventListener('click', (e) => {
+    const editBtn  = e.target.closest('[data-edit]');
+    const resetBtn = e.target.closest('[data-reset]');
+    if (editBtn)  openEditModal(editBtn.dataset.edit);
+    if (resetBtn) resetOverride(resetBtn.dataset.reset);
+  });
+  $('upload-xlsx-input').addEventListener('change', (e) => {
+    if (e.target.files && e.target.files[0]) uploadXlsx(e.target.files[0]);
+  });
+  $('btn-show-backups').addEventListener('click', openBackupsModal);
+  $('backups-body').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-rollback]');
+    if (btn) rollbackTo(btn.dataset.rollback);
+  });
+
+  // Modal: cerrar con backdrop / botones [data-close]
+  document.querySelectorAll('.modal').forEach((m) => {
+    m.addEventListener('click', (e) => {
+      if (e.target.matches('[data-close]')) m.hidden = true;
+    });
+  });
+  $('btn-edit-save').addEventListener('click', saveEdit);
+  $('btn-edit-reset').addEventListener('click', () => resetOverride(tagsState.editing));
+
+  // Preview de upload
+  $('btn-prev-confirm').addEventListener('click', confirmPreviewUpload);
+  $('btn-prev-cancel').addEventListener('click', cancelPreviewUpload);
+  // Cancelar también si se cierra con el backdrop.
+  $('modal-preview').addEventListener('click', (e) => {
+    if (e.target.matches('[data-close]')) cancelPreviewUpload();
+  });
 }
 
 function wireKeyboard() {

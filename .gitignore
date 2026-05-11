@@ -5,6 +5,11 @@ events.db-wal
 events.db-shm
 events_export.xlsx
 
+# Estado por deployment — el xlsx activo y los backups viven en la PC del datalogger.
+# El xlsx "semilla" (Programa_TTA_IRSA_convertido v4.xlsx) sí se versiona como base.
+tags_active.xlsx
+xlsx_backups/
+
 # Logs (rotativos, generados en runtime)
 logs/
 *.log

@@ -20,24 +20,30 @@ import csv
 import io
 import logging
 import os
+import re
 import secrets
+import shutil
 import sqlite3
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from modbus_logger import (
     MAX_EVENTS,
     connection_status,
+    fetch_overrides,
     load_tags_safe,
+    reload_event,
     start_logger,
 )
+from tag_loader import ACTIVE_XLSX, BACKUPS_DIR, validate_xlsx, load_tags
 
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
@@ -47,10 +53,35 @@ app = FastAPI(title="Datalogger V2", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-# Tags cargados una vez al arrancar la app — la planilla no cambia en runtime.
-tags = load_tags_safe()
+# Tags cargados al arrancar y refrescables vía /api/tags/reload. Bajo lock
+# porque /api/variables y los endpoints de admin pueden mutar / leer en paralelo.
+_tags_lock = threading.Lock()
+_tags_cache: list = []
+
+
+def _refresh_tags_cache():
+    global _tags_cache
+    conn = _db_connect_unrowed()
+    try:
+        new_tags = load_tags_safe(conn)
+    finally:
+        conn.close()
+    with _tags_lock:
+        _tags_cache = new_tags
+    return new_tags
+
+
+def _db_connect_unrowed() -> sqlite3.Connection:
+    # connection sin row_factory — para load_tags_safe que usa índices numéricos
+    return sqlite3.connect("events.db")
+
 
 threading.Thread(target=start_logger, daemon=True).start()
+
+# Pequeña pausa para que el thread del logger corra init_db antes de que el
+# refresh del cache intente leer tag_overrides. fetch_overrides es robusto a
+# tabla inexistente, así que esto es defensivo, no requerido.
+_refresh_tags_cache()
 
 if os.environ.get("RAILWAY_ENVIRONMENT"):
     from modbus_simulator import start_simulator
@@ -229,8 +260,11 @@ def api_variables():
     finally:
         conn.close()
 
+    with _tags_lock:
+        tags_snapshot = list(_tags_cache)
+
     out = []
-    for t in tags:
+    for t in tags_snapshot:
         st = _state_to_int(latest.get(t["tag"]))
         out.append({
             "symbol":      t["tag"],
@@ -487,4 +521,464 @@ def api_export_csv(
         _gen(),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{_export_filename("eventos", "csv")}"'},
+    )
+
+
+# ---------------------------------------------------------------------------
+# TAGS — administración desde la pestaña Sistema
+# ---------------------------------------------------------------------------
+
+def _now_ts() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
+def _backup_stamp() -> str:
+    return datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+
+def _backup_active_xlsx(reason: str) -> Optional[str]:
+    """Copia el xlsx activo a `xlsx_backups/` con timestamp. Devuelve el nombre."""
+    if not os.path.exists(ACTIVE_XLSX):
+        return None
+    os.makedirs(BACKUPS_DIR, exist_ok=True)
+    name = f"{reason}_{_backup_stamp()}.xlsx"
+    dest = os.path.join(BACKUPS_DIR, name)
+    shutil.copy2(ACTIVE_XLSX, dest)
+    return name
+
+
+def _list_backups() -> list[dict]:
+    if not os.path.isdir(BACKUPS_DIR):
+        return []
+    items = []
+    for entry in sorted(os.scandir(BACKUPS_DIR), key=lambda e: e.stat().st_mtime, reverse=True):
+        if not entry.name.lower().endswith(".xlsx"):
+            continue
+        try:
+            n_valid = validate_xlsx(entry.path)
+        except Exception:
+            n_valid = None
+        st = entry.stat()
+        items.append({
+            "name":     entry.name,
+            "size":     st.st_size,
+            "mtime":    datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%dT%H:%M:%S"),
+            "tags":     n_valid,
+            "valid":    n_valid is not None,
+        })
+    return items
+
+
+@app.get("/api/tags", dependencies=[Depends(require_session)])
+def api_tags():
+    """Tags efectivos = xlsx activo con overrides aplicados.
+
+    Devuelve además los campos base del xlsx para que la UI pueda comparar
+    y mostrar el valor original cuando hay un override.
+    """
+    # Recargamos desde xlsx + DB para que la UI siempre vea lo más fresco.
+    try:
+        base_tags = load_tags()
+    except FileNotFoundError:
+        raise HTTPException(404, f"No existe el xlsx activo ({ACTIVE_XLSX}).")
+    except Exception as e:
+        raise HTTPException(500, f"Error leyendo xlsx: {e}")
+
+    conn = _db_connect_unrowed()
+    try:
+        ovr = fetch_overrides(conn)
+        try:
+            row = conn.execute("SELECT MAX(updated_at) FROM tag_overrides").fetchone()
+            last_override_at = row[0] if row else None
+        except sqlite3.OperationalError:
+            last_override_at = None
+    finally:
+        conn.close()
+
+    out = []
+    for t in base_tags:
+        ov = ovr.get(t["address"])
+        out.append({
+            "address":          t["address"],
+            "symbol":           t["tag"] if not ov else (ov.get("symbol") or t["tag"]),
+            "description":      t["description"] if not ov else (ov.get("description") if ov.get("description") is not None else t["description"]),
+            "type":             t["type"] if not ov else (ov.get("signal_type") or t["type"]),
+            "base_symbol":      t["tag"],
+            "base_description": t["description"],
+            "base_type":        t["type"],
+            "overridden":       bool(ov),
+        })
+    return {
+        "active_xlsx":      ACTIVE_XLSX,
+        "active_mtime":     datetime.fromtimestamp(os.path.getmtime(ACTIVE_XLSX)).strftime("%Y-%m-%dT%H:%M:%S") if os.path.exists(ACTIVE_XLSX) else None,
+        "last_override_at": _db_ts_to_iso(last_override_at),
+        "count":            len(out),
+        "overrides":        sum(1 for x in out if x["overridden"]),
+        "items":            out,
+    }
+
+
+@app.patch("/api/tags/{address:path}", dependencies=[Depends(require_session)])
+async def api_tag_patch(address: str, request: Request):
+    body = await request.json()
+    symbol = body.get("symbol")
+    desc   = body.get("description")
+    typ    = body.get("type")
+    if typ is not None and typ not in ("INPUT", "OUTPUT"):
+        raise HTTPException(400, "type debe ser INPUT u OUTPUT")
+
+    # Validar que el address exista en el xlsx (si no, el override sería huérfano).
+    try:
+        base_tags = load_tags()
+    except Exception as e:
+        raise HTTPException(500, f"Error leyendo xlsx: {e}")
+    addrs = {t["address"] for t in base_tags}
+    if address not in addrs:
+        raise HTTPException(404, f"Address {address!r} no existe en el xlsx activo.")
+
+    conn = _db_connect_unrowed()
+    try:
+        conn.execute("""
+            INSERT INTO tag_overrides(address, symbol, description, signal_type, updated_at)
+            VALUES(?, ?, ?, ?, ?)
+            ON CONFLICT(address) DO UPDATE SET
+                symbol      = COALESCE(excluded.symbol,      tag_overrides.symbol),
+                description = COALESCE(excluded.description, tag_overrides.description),
+                signal_type = COALESCE(excluded.signal_type, tag_overrides.signal_type),
+                updated_at  = excluded.updated_at
+        """, (address, symbol, desc, typ, _now_ts()))
+        conn.commit()
+    finally:
+        conn.close()
+
+    _refresh_tags_cache()
+    reload_event.set()
+    return {"ok": True, "address": address}
+
+
+@app.delete("/api/tags/{address:path}/override", dependencies=[Depends(require_session)])
+def api_tag_override_delete(address: str):
+    conn = _db_connect_unrowed()
+    try:
+        cur = conn.execute("DELETE FROM tag_overrides WHERE address = ?", (address,))
+        conn.commit()
+        deleted = cur.rowcount
+    finally:
+        conn.close()
+
+    _refresh_tags_cache()
+    reload_event.set()
+    return {"ok": True, "address": address, "deleted": deleted}
+
+
+# --- Upload en dos fases: preview (diff) + confirm (swap real) ---
+
+_PENDING_DIR = Path(BACKUPS_DIR) / "_pending"
+_PENDING_RE = re.compile(r"^pending_[A-Za-z0-9]{12}\.xlsx$")
+
+
+def _cleanup_pending(except_token: Optional[str] = None):
+    """Borra todos los pending salvo (opcionalmente) uno. Mantenemos la
+    carpeta liviana; los pending son efímeros y siempre se regeneran."""
+    if not _PENDING_DIR.is_dir():
+        return
+    for p in _PENDING_DIR.iterdir():
+        if not p.is_file():
+            continue
+        if except_token and p.name == f"pending_{except_token}.xlsx":
+            continue
+        try: p.unlink()
+        except Exception: pass
+
+
+def _pending_path(token: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9]{12}", token or ""):
+        raise HTTPException(400, "Token de pending inválido.")
+    return _PENDING_DIR / f"pending_{token}.xlsx"
+
+
+def _tag_index(tags: list) -> dict:
+    return {t["address"]: t for t in tags}
+
+
+def _compute_diff(old_tags: list, new_tags: list, override_addrs: set) -> dict:
+    """Compara dos listas de tags por address. Detecta también colisiones
+    dentro de la nueva planilla (duplicate address, duplicate Flag HR).
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    # Colisiones internas en la planilla nueva.
+    seen_addr = {}
+    seen_flag = {}
+    for t in new_tags:
+        a = t["address"]
+        if a in seen_addr:
+            errors.append(f"Address duplicado en la planilla: {a}")
+        seen_addr[a] = t
+        flag_key = (t["mw_word"], t["mw_bit"])
+        if flag_key in seen_flag and seen_flag[flag_key] != a:
+            errors.append(
+                f"Flag HR duplicada: %M{t['mw_word']}.{t['mw_bit']} "
+                f"usada por {seen_flag[flag_key]} y {a}"
+            )
+        seen_flag.setdefault(flag_key, a)
+
+    old_idx = _tag_index(old_tags)
+    new_idx = _tag_index(new_tags)
+
+    added, removed, modified, unchanged = [], [], [], 0
+
+    for addr, n in new_idx.items():
+        if addr not in old_idx:
+            added.append({
+                "address": addr, "symbol": n["tag"],
+                "description": n["description"], "type": n["type"],
+            })
+            continue
+        o = old_idx[addr]
+        fields = []
+        if o["tag"]         != n["tag"]:         fields.append("symbol")
+        if o["description"] != n["description"]: fields.append("description")
+        if o["type"]        != n["type"]:        fields.append("type")
+        if o["mw_word"] != n["mw_word"] or o["mw_bit"] != n["mw_bit"]:
+            fields.append("flag_hr")
+        if not fields:
+            unchanged += 1
+        else:
+            modified.append({
+                "address": addr,
+                "fields":  fields,
+                "old": {
+                    "symbol": o["tag"], "description": o["description"],
+                    "type": o["type"],
+                    "flag_hr": f"%M{o['mw_word']}.{o['mw_bit']}",
+                },
+                "new": {
+                    "symbol": n["tag"], "description": n["description"],
+                    "type": n["type"],
+                    "flag_hr": f"%M{n['mw_word']}.{n['mw_bit']}",
+                },
+            })
+
+    for addr, o in old_idx.items():
+        if addr not in new_idx:
+            removed.append({
+                "address": addr, "symbol": o["tag"],
+                "description": o["description"], "type": o["type"],
+            })
+
+    # Overrides huérfanos: addresses con override que ya no están en la nueva.
+    orphan_overrides = sorted(a for a in override_addrs if a not in new_idx)
+    if orphan_overrides:
+        warnings.append(
+            f"{len(orphan_overrides)} override(s) quedan huérfanos "
+            f"(sus addresses no están en la nueva planilla). "
+            f"Se pueden borrar después desde la lista de tags."
+        )
+
+    # Aviso si la cantidad de signals cambia mucho (heurística simple).
+    if old_tags and abs(len(new_tags) - len(old_tags)) > max(20, 0.2 * len(old_tags)):
+        warnings.append(
+            f"La cantidad de tags pasa de {len(old_tags)} a {len(new_tags)} "
+            f"— revisá que sea esperado."
+        )
+
+    # Aviso si la nueva planilla no tiene INPUTs o no tiene OUTPUTs.
+    n_in  = sum(1 for t in new_tags if t["type"] == "INPUT")
+    n_out = sum(1 for t in new_tags if t["type"] == "OUTPUT")
+    if n_in == 0:
+        errors.append("La nueva planilla no tiene ningún tag INPUT.")
+    if n_out == 0:
+        errors.append("La nueva planilla no tiene ningún tag OUTPUT.")
+
+    return {
+        "summary": {
+            "old_count":  len(old_tags),
+            "new_count":  len(new_tags),
+            "unchanged":  unchanged,
+            "added":      len(added),
+            "removed":    len(removed),
+            "modified":   len(modified),
+            "inputs":     n_in,
+            "outputs":    n_out,
+            "orphan_overrides": len(orphan_overrides),
+        },
+        "added":            added,
+        "removed":          removed,
+        "modified":         modified,
+        "orphan_overrides": orphan_overrides,
+        "warnings":         warnings,
+        "errors":           errors,
+    }
+
+
+@app.post("/api/tags/preview", dependencies=[Depends(require_session)])
+async def api_tags_preview(file: UploadFile = File(...)):
+    """Valida y compara contra el xlsx activo SIN reemplazarlo.
+    Devuelve un diff + un token para confirmar el reemplazo con
+    /api/tags/upload/confirm.
+    """
+    if not file.filename or not file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(400, "Se esperaba un archivo .xlsx")
+
+    _PENDING_DIR.mkdir(parents=True, exist_ok=True)
+    _cleanup_pending()
+    token = secrets.token_hex(6)        # 12 chars hex
+    pending = _pending_path(token)
+    with open(pending, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    try:
+        validate_xlsx(str(pending))
+    except ValueError as e:
+        try: pending.unlink()
+        except Exception: pass
+        raise HTTPException(400, f"Planilla inválida: {e}")
+
+    # Cargar ambas listas y comparar.
+    try:
+        new_tags = load_tags(xlsx_path=str(pending))
+    except Exception as e:
+        try: pending.unlink()
+        except Exception: pass
+        raise HTTPException(400, f"Error parseando planilla: {e}")
+
+    try:
+        old_tags = load_tags()
+    except Exception:
+        old_tags = []
+
+    conn = _db_connect_unrowed()
+    try:
+        override_addrs = set(fetch_overrides(conn).keys())
+    finally:
+        conn.close()
+
+    diff = _compute_diff(old_tags, new_tags, override_addrs)
+
+    # Si hay errores estructurales, se mantiene el pending pero el confirm
+    # va a rechazar — la UI debería mostrar los errores y no ofrecer confirm.
+    return {
+        "ok":          not diff["errors"],
+        "pending_id":  token,
+        "filename":    file.filename,
+        **diff,
+    }
+
+
+@app.post("/api/tags/upload/confirm", dependencies=[Depends(require_session)])
+async def api_tags_upload_confirm(request: Request):
+    body = await request.json()
+    token = (body.get("pending_id") or "").strip()
+    pending = _pending_path(token)
+    if not pending.exists():
+        raise HTTPException(404, "Pending no encontrado o expirado. Volvé a subir.")
+
+    # Re-validar (defensa en profundidad: alguien podría borrar/corromper el archivo
+    # entre preview y confirm, o cambiar el activo de fondo).
+    try:
+        validate_xlsx(str(pending))
+        new_tags = load_tags(xlsx_path=str(pending))
+    except Exception as e:
+        try: pending.unlink()
+        except Exception: pass
+        raise HTTPException(400, f"El pending dejó de ser válido: {e}")
+
+    try:
+        old_tags = load_tags()
+    except Exception:
+        old_tags = []
+
+    conn = _db_connect_unrowed()
+    try:
+        override_addrs = set(fetch_overrides(conn).keys())
+    finally:
+        conn.close()
+
+    diff = _compute_diff(old_tags, new_tags, override_addrs)
+    if diff["errors"]:
+        raise HTTPException(400, "El pending tiene errores: " + "; ".join(diff["errors"]))
+
+    backed_up = _backup_active_xlsx("pre-upload")
+    shutil.move(str(pending), ACTIVE_XLSX)
+    _cleanup_pending()
+
+    _refresh_tags_cache()
+    reload_event.set()
+    return {"ok": True, "backup": backed_up, "summary": diff["summary"]}
+
+
+@app.delete("/api/tags/preview/{token}", dependencies=[Depends(require_session)])
+def api_tags_preview_cancel(token: str):
+    p = _pending_path(token)
+    if p.exists():
+        try: p.unlink()
+        except Exception: pass
+    return {"ok": True}
+
+
+@app.get("/api/tags/backups", dependencies=[Depends(require_session)])
+def api_tags_backups():
+    items = _list_backups()
+    active = None
+    if os.path.exists(ACTIVE_XLSX):
+        try:
+            n_valid = validate_xlsx(ACTIVE_XLSX)
+        except Exception:
+            n_valid = None
+        st = os.stat(ACTIVE_XLSX)
+        active = {
+            "name":  ACTIVE_XLSX,
+            "size":  st.st_size,
+            "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%dT%H:%M:%S"),
+            "tags":  n_valid,
+        }
+    return {"active": active, "items": items}
+
+
+@app.post("/api/tags/rollback", dependencies=[Depends(require_session)])
+async def api_tags_rollback(request: Request):
+    body = await request.json()
+    name = (body.get("backup") or "").strip()
+    if not name or "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(400, "Nombre de backup inválido.")
+    src = Path(BACKUPS_DIR) / name
+    if not src.exists():
+        raise HTTPException(404, f"Backup no encontrado: {name}")
+    try:
+        validate_xlsx(str(src))
+    except ValueError as e:
+        raise HTTPException(400, f"El backup no es una planilla válida: {e}")
+
+    backed_up = _backup_active_xlsx("pre-rollback")
+    shutil.copy2(str(src), ACTIVE_XLSX)
+
+    _refresh_tags_cache()
+    reload_event.set()
+    return {"ok": True, "restored": name, "backup": backed_up}
+
+
+@app.get("/api/tags/download", dependencies=[Depends(require_session)])
+def api_tags_download():
+    if not os.path.exists(ACTIVE_XLSX):
+        raise HTTPException(404, "No hay xlsx activo.")
+    return FileResponse(
+        ACTIVE_XLSX,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=ACTIVE_XLSX,
+    )
+
+
+@app.get("/api/tags/download/{name}", dependencies=[Depends(require_session)])
+def api_tags_download_backup(name: str):
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(400, "Nombre inválido.")
+    src = Path(BACKUPS_DIR) / name
+    if not src.exists():
+        raise HTTPException(404, "Backup no encontrado.")
+    return FileResponse(
+        str(src),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=name,
     )

@@ -4,6 +4,7 @@ import logging
 import logging.handlers
 import sys
 import os
+import threading
 from datetime import datetime
 from pymodbus.client import ModbusTcpClient
 from tag_loader import load_tags
@@ -61,15 +62,6 @@ DEVICE_ID      = 1
 MIN_DELTA      = 0.1       # Debounce en segundos
 POLL_INTERVAL  = 0.5       # Tiempo entre lecturas (segundos)
 
-# Holding Registers analógicos/numéricos — %MW, dos bloques separados.
-# Estos NO contienen el espejo de I/O — son registros propios del programa.
-HR_BLOCK1_ADDR  = 0    # %MW0  → %MW50
-HR_BLOCK1_COUNT = 51
-HR_BLOCK2_ADDR  = 100  # %MW100 → %MW114
-HR_BLOCK2_COUNT = 20
-
-HR_COUNT = HR_BLOCK1_COUNT + HR_BLOCK2_COUNT   # 71
-
 # Parámetros del cliente Modbus
 MODBUS_TIMEOUT = 3     # segundos — socket timeout
 MODBUS_RETRIES = 3     # reintentos automáticos por request fallido
@@ -90,24 +82,47 @@ connection_status = {
 
 event_counter = 0
 
+# Señal que dispara una recarga en vivo de los tags (xlsx u overrides cambiaron).
+# La setea main.py al aceptar un upload / edit / rollback. El loop la chequea
+# al inicio de cada ciclo y la limpia tras recargar.
+reload_event = threading.Event()
+
 
 # ---------------------------------------------------------------------------
 # TAGS
 # ---------------------------------------------------------------------------
 
-def load_tags_safe():
+def fetch_overrides(conn):
+    """Devuelve overrides como dict {address: {symbol, description, signal_type}}."""
+    try:
+        cur = conn.execute(
+            "SELECT address, symbol, description, signal_type FROM tag_overrides"
+        )
+        return {
+            r[0]: {"symbol": r[1], "description": r[2], "signal_type": r[3]}
+            for r in cur.fetchall()
+        }
+    except sqlite3.OperationalError:
+        # Tabla aún no creada (primer arranque antes de init_db).
+        return {}
+
+
+def load_tags_safe(db_conn=None):
     """
-    Carga los tags del xlsx. Sin tags no hay mapeo I/O y el logger no arranca.
+    Carga los tags del xlsx activo aplicando overrides de la DB si está disponible.
+    Sin tags no hay mapeo I/O y el logger no arranca.
     """
     log.info("Cargando tags desde tag_loader...")
     try:
-        tags = load_tags()
+        overrides = fetch_overrides(db_conn) if db_conn is not None else {}
+        tags = load_tags(overrides=overrides)
         if not tags:
             log.critical("tag_loader devolvió 0 tags — revisar xlsx y formato.")
             return []
         n_in  = sum(1 for t in tags if t["type"] == "INPUT")
         n_out = sum(1 for t in tags if t["type"] == "OUTPUT")
-        log.info(f"Tags cargados: {len(tags)} ({n_in} INPUT, {n_out} OUTPUT)")
+        n_ov  = sum(1 for t in tags if t.get("overridden"))
+        log.info(f"Tags cargados: {len(tags)} ({n_in} INPUT, {n_out} OUTPUT, {n_ov} con override)")
         return tags
     except Exception as e:
         log.critical(f"No se pudieron cargar los tags: {e}", exc_info=True)
@@ -157,6 +172,16 @@ def init_db(conn):
             )
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_sysev_timestamp ON system_events(timestamp)")
+        # Overrides editables desde la UI — pisan los campos del xlsx por address.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tag_overrides(
+                address     TEXT PRIMARY KEY,
+                symbol      TEXT,
+                description TEXT,
+                signal_type TEXT,
+                updated_at  TEXT
+            )
+        """)
         conn.commit()
 
         cursor.execute("SELECT COUNT(*) FROM events")
@@ -267,33 +292,56 @@ def decode_bits(registers, base_word, tags_subset):
 # LOOP PRINCIPAL
 # ---------------------------------------------------------------------------
 
+def _compute_tag_state(tags):
+    """Calcula todas las estructuras derivadas de la lista de tags.
+
+    Devuelve un dict con: input/output tags, bases y counts de %MW espejo,
+    arrays planos para el hot loop y vectores de estado anterior reseteados.
+    """
+    input_tags  = [t for t in tags if t["type"] == "INPUT"]
+    output_tags = [t for t in tags if t["type"] == "OUTPUT"]
+    in_base,  in_count  = _word_range(input_tags)
+    out_base, out_count = _word_range(output_tags)
+    io_tags = input_tags + output_tags
+    total   = len(io_tags)
+    return {
+        "input_tags":       input_tags,
+        "output_tags":      output_tags,
+        "in_base":          in_base,
+        "in_count":         in_count,
+        "out_base":         out_base,
+        "out_count":        out_count,
+        "total":            total,
+        "tag_names":        [t["tag"]         for t in io_tags],
+        "tag_addresses":    [t["address"]     for t in io_tags],
+        "tag_descs":        [t["description"] for t in io_tags],
+        "signal_types":     [t["type"]        for t in io_tags],
+        "previous_values":  [None] * total,
+        "last_change_time": [0.0]  * total,
+    }
+
+
 def start_logger():
     global connection_status
 
-    tags = load_tags_safe()
+    db_conn = sqlite3.connect("events.db")
+    init_db(db_conn)
+    enforce_fifo(db_conn)
+
+    tags = load_tags_safe(db_conn)
     if not tags:
         log.critical("Sin tags no se puede iniciar el logger. Abortando.")
         return
 
-    input_tags  = [t for t in tags if t["type"] == "INPUT"]
-    output_tags = [t for t in tags if t["type"] == "OUTPUT"]
-
-    in_base,  in_count  = _word_range(input_tags)
-    out_base, out_count = _word_range(output_tags)
-
-    TOTAL_INPUTS  = len(input_tags)
-    TOTAL_OUTPUTS = len(output_tags)
-    TOTAL_SIGNALS = TOTAL_INPUTS + TOTAL_OUTPUTS
+    st = _compute_tag_state(tags)
 
     log.info("=" * 60)
     log.info("LOGGER INICIADO")
     log.info(f"  PLC:              {PLC_IP}:{PLC_PORT}")
     log.info(f"  Device ID:        {DEVICE_ID}")
-    log.info(f"  Inputs:           {TOTAL_INPUTS}  (espejo en %MW{in_base}..%MW{in_base + in_count - 1})")
-    log.info(f"  Outputs:          {TOTAL_OUTPUTS}  (espejo en %MW{out_base}..%MW{out_base + out_count - 1})")
-    log.info(f"  HR analógicos:    {HR_COUNT}  (%MW{HR_BLOCK1_ADDR}..%MW{HR_BLOCK1_ADDR + HR_BLOCK1_COUNT - 1}, "
-             f"%MW{HR_BLOCK2_ADDR}..%MW{HR_BLOCK2_ADDR + HR_BLOCK2_COUNT - 1})")
-    log.info(f"  Total signals:    {TOTAL_SIGNALS}")
+    log.info(f"  Inputs:           {len(st['input_tags'])}  (espejo en %MW{st['in_base']}..%MW{st['in_base'] + st['in_count'] - 1})")
+    log.info(f"  Outputs:          {len(st['output_tags'])}  (espejo en %MW{st['out_base']}..%MW{st['out_base'] + st['out_count'] - 1})")
+    log.info(f"  Total signals:    {st['total']}")
     log.info(f"  Poll interval:    {POLL_INTERVAL}s")
     log.info(f"  Debounce:         {MIN_DELTA}s")
     log.info(f"  Max events (DB):  {MAX_EVENTS:,}")
@@ -304,33 +352,13 @@ def start_logger():
     log.info(f"  Log file:         {LOG_FILE}")
     log.info("=" * 60)
 
-    db_conn = sqlite3.connect("events.db")
-    init_db(db_conn)
-    enforce_fifo(db_conn)
-
     client          = build_client()
     reconnect_delay = BACKOFF_BASE
 
-    # Pre-computar arrays para evitar dict lookups en el hot loop.
-    io_tags          = input_tags + output_tags
-    tag_names_io     = [t["tag"]         for t in io_tags]
-    tag_addresses_io = [t["address"]     for t in io_tags]
-    tag_descs_io     = [t["description"] for t in io_tags]
-    signal_types_io  = [t["type"]        for t in io_tags]
-
-    # Tags genéricos para los HR analógicos (no vienen del xlsx).
-    hr_addresses = (
-        [f"%MW{HR_BLOCK1_ADDR + i}" for i in range(HR_BLOCK1_COUNT)] +
-        [f"%MW{HR_BLOCK2_ADDR + i}" for i in range(HR_BLOCK2_COUNT)]
-    )
-    hr_names = [f"REG_{a[1:]}"  for a in hr_addresses]
-    hr_descs = [f"Register {a}" for a in hr_addresses]
-
-    # Vectores de estado anterior
-    previous_values    = [None] * TOTAL_SIGNALS
-    last_change_time   = [0.0]  * TOTAL_SIGNALS
-    previous_registers = [None] * HR_COUNT
-    last_register_time = [0.0]  * HR_COUNT
+    # En el primer ciclo solo sembramos previous_values, sin generar eventos:
+    # de lo contrario, cada arranque del logger guardaría ~270 "cambios"
+    # espurios (None → estado inicial) por cada signal. Mismo flag al recargar.
+    first_cycle = True
 
     log.info("Entrando al loop de polling...")
     save_system_event(db_conn, "INICIO", f"Sistema iniciado — PLC {PLC_IP}:{PLC_PORT}")
@@ -340,6 +368,22 @@ def start_logger():
     try:
         while True:
             try:
+                # ── Recarga en vivo de tags (xlsx u overrides) ────────
+                if reload_event.is_set():
+                    reload_event.clear()
+                    new_tags = load_tags_safe(db_conn)
+                    if new_tags:
+                        st = _compute_tag_state(new_tags)
+                        first_cycle = True
+                        save_system_event(
+                            db_conn, "RELOAD_TAGS",
+                            f"Tags recargados: {st['total']} signals "
+                            f"({len(st['input_tags'])} IN, {len(st['output_tags'])} OUT)"
+                        )
+                        log.info(f"Tags recargados en vivo: {st['total']} signals")
+                    else:
+                        log.error("Recarga de tags falló — se mantiene el set anterior.")
+
                 # ── Conexión ──────────────────────────────────────────
                 if not client.is_socket_open():
                     log.info(f"Socket cerrado — conectando a {PLC_IP}:{PLC_PORT}...")
@@ -360,16 +404,13 @@ def start_logger():
 
                 # ── Lecturas (todas FC03) ─────────────────────────────
                 t_start = time.perf_counter()
-                in_regs  = read_register_block(client, in_base,        in_count,        "INPUT mirror")
-                out_regs = read_register_block(client, out_base,       out_count,       "OUTPUT mirror")
-                hr1      = read_register_block(client, HR_BLOCK1_ADDR, HR_BLOCK1_COUNT, "HR block1")
-                hr2      = read_register_block(client, HR_BLOCK2_ADDR, HR_BLOCK2_COUNT, "HR block2")
+                in_regs  = read_register_block(client, st["in_base"],  st["in_count"],  "INPUT mirror")
+                out_regs = read_register_block(client, st["out_base"], st["out_count"], "OUTPUT mirror")
                 t_ms     = (time.perf_counter() - t_start) * 1000
 
-                input_values  = decode_bits(in_regs,  in_base,  input_tags)
-                output_values = decode_bits(out_regs, out_base, output_tags)
+                input_values  = decode_bits(in_regs,  st["in_base"],  st["input_tags"])
+                output_values = decode_bits(out_regs, st["out_base"], st["output_tags"])
                 values        = input_values + output_values
-                registers     = hr1 + hr2
 
                 connection_status["connected"]      = True
                 connection_status["last_connected"] = datetime.now().strftime("%d/%m/%y %H:%M:%S")
@@ -382,37 +423,33 @@ def start_logger():
                 # ── Detección de cambios I/O ──────────────────────────
                 now     = time.time()
                 changes = 0
+                total_signals = st["total"]
 
-                for i in range(TOTAL_SIGNALS):
-                    current = bool(values[i])
+                if first_cycle:
+                    for i in range(total_signals):
+                        st["previous_values"][i]  = bool(values[i])
+                        st["last_change_time"][i] = now
+                    first_cycle = False
+                    log.info(f"Estado inicial sembrado ({total_signals} signals) — los próximos ciclos detectan cambios")
+                else:
+                    for i in range(total_signals):
+                        current = bool(values[i])
 
-                    if current != previous_values[i] and (now - last_change_time[i]) > MIN_DELTA:
-                        last_change_time[i] = now
-                        previous_values[i]  = current
+                        if current != st["previous_values"][i] and (now - st["last_change_time"][i]) > MIN_DELTA:
+                            st["last_change_time"][i] = now
+                            st["previous_values"][i]  = current
 
-                        state = "ON" if current else "OFF"
+                            state = "ON" if current else "OFF"
 
-                        save_event(db_conn, tag_names_io[i], tag_addresses_io[i], signal_types_io[i], state, tag_descs_io[i])
-                        log_events.info(
-                            f"[{signal_types_io[i]}] {tag_names_io[i]} | {tag_addresses_io[i]} | {state} | {tag_descs_io[i]}"
-                        )
-                        changes += 1
+                            save_event(db_conn, st["tag_names"][i], st["tag_addresses"][i], st["signal_types"][i], state, st["tag_descs"][i])
+                            log_events.info(
+                                f"[{st['signal_types'][i]}] {st['tag_names'][i]} | {st['tag_addresses'][i]} | {state} | {st['tag_descs'][i]}"
+                            )
+                            changes += 1
 
-                # ── Holding Registers analógicos ──────────────────────
-                for k, current in enumerate(registers):
-                    if current != previous_registers[k] and (now - last_register_time[k]) > MIN_DELTA:
-                        last_register_time[k]   = now
-                        previous_registers[k]   = current
-
-                        save_event(db_conn, hr_names[k], hr_addresses[k], "REGISTER", str(current), hr_descs[k])
-                        log_events.info(
-                            f"[REGISTER] {hr_names[k]} | {hr_addresses[k]} | {current} | {hr_descs[k]}"
-                        )
-                        changes += 1
-
-                if changes:
-                    db_conn.commit()
-                    log.debug(f"{changes} cambio(s) detectado(s) en este ciclo")
+                    if changes:
+                        db_conn.commit()
+                        log.debug(f"{changes} cambio(s) detectado(s) en este ciclo")
 
             except Exception as e:
                 connection_status["connected"]  = False

@@ -6,12 +6,13 @@ Sistema de registro de eventos para variables digitales vía Modbus TCP, con int
 
 ## ¿Qué hace?
 
-- Lee 56 entradas digitales + 48 salidas digitales + 71 registros analógicos desde un PLC Schneider M221 via Modbus TCP cada 500 ms.
-- Registra cada cambio de estado con estampa de tiempo en una base de datos local (SQLite).
+- Lee las entradas y salidas digitales de un PLC Schneider M221 vía Modbus TCP cada 500 ms.
+- Registra cada cambio de estado con estampa de tiempo en una base de datos local (SQLite, FIFO de 1.000.000 eventos).
 - Muestra el estado en tiempo real desde cualquier navegador de la red (auto-refresh, tema claro/oscuro, atajos de teclado).
 - Exporta el historial de eventos a Excel o CSV streaming.
+- Permite editar el mapeo (symbol/descripción/tipo) y reemplazar el xlsx desde la propia interfaz, con previsualización del diff antes de aplicar y rollback a versiones anteriores. Los cambios se recargan en caliente sin reiniciar el servicio.
 
-> **Nota M221:** este controlador no expone %I/%Q vía Modbus. El programa del PLC copia las I/O físicas a bits de %MW (`%MW200..%MW203` para inputs y `%MW210..%MW212` para outputs), y el logger las lee como Holding Registers (FC03). Ver `Programa_TTA_IRSA_convertido v4.xlsx` para el mapeo completo.
+> **Nota M221:** este controlador no expone %I/%Q vía Modbus. El programa del PLC copia cada bit físico a un bit de %MW (la columna `Flag HR` del xlsx), y el logger los lee como Holding Registers (FC03). El rango exacto de %MW espejados se calcula al arrancar a partir del archivo `tags_active.xlsx`.
 
 ---
 
@@ -27,10 +28,14 @@ datalogger/
 │   └── login.html      # Login
 ├── main.py             # Servidor web FastAPI + endpoints /api/*
 ├── modbus_logger.py    # Polling Modbus FC03 + escritura en DB
-├── tag_loader.py       # Carga de mapeo desde xlsx
+├── tag_loader.py       # Carga de mapeo desde xlsx + overrides
 ├── modbus_simulator.py # Simulador PLC para pruebas locales
-└── Programa_TTA_IRSA_convertido v4.xlsx   # Mapeo I/O físico ↔ %MW
+├── Programa_TTA_IRSA_convertido v4.xlsx   # Semilla del mapeo (versionada)
+├── tags_active.xlsx    # Mapeo en uso (generado en runtime, no se versiona)
+└── xlsx_backups/       # Backups automáticos antes de cada upload/rollback
 ```
+
+> En el primer arranque, si `tags_active.xlsx` no existe, se copia desde la semilla. A partir de ahí, las correcciones desde la UI se guardan en la tabla `tag_overrides` (DB), y los uploads/rollbacks operan sobre `tags_active.xlsx`. La semilla solo se vuelve a usar si se borra el activo.
 
 ---
 
@@ -104,7 +109,7 @@ Abrir `Programa_TTA_IRSA_convertido v4.xlsx`, hoja `Sheet2`. Cada fila debe tene
 - `TYPE` = `INPUT` o `OUTPUT`
 - `Symbol` (tag) y `Comment`
 
-> Si cambia el mapeo en el PLC, **actualizar la xlsx y reiniciar la app** — los rangos de %MW que el logger lee se calculan al arrancar a partir del archivo.
+> Si cambia el mapeo en el PLC, regenerar la planilla desde EcoStruxure y subirla desde la pestaña **Sistema → Configuración de tags → ⬆ Subir nuevo xlsx**. La UI muestra un preview con el diff (agregados / eliminados / modificados / overrides huérfanos) antes de aplicar, y el archivo anterior queda respaldado automáticamente. La recarga es en caliente — no hace falta reiniciar el servicio.
 
 ### 4. Configurar credenciales y conexión
 
@@ -128,16 +133,18 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8000
 .\start.ps1
 ```
 
-En la consola debería aparecer:
+En la consola debería aparecer (cantidades exactas según `tags_active.xlsx`):
 
 ```
 LOGGER INICIADO
   PLC:              192.168.200.10:502
   Device ID:        1
-  Inputs:           56  (espejo en %MW200..%MW203)
-  Outputs:          48  (espejo en %MW210..%MW212)
+  Inputs:           N  (espejo en %MW<base>..%MW<base+count-1>)
+  Outputs:          M  (espejo en %MW<base>..%MW<base+count-1>)
+  Total signals:    N+M
   ...
 Conexión establecida con 192.168.200.10:502
+Estado inicial sembrado (N+M signals) — los próximos ciclos detectan cambios
 ```
 
 Si en cambio aparece `Lectura error: Modbus Error: [Input/Output] No Response received from the remote unit`, revisar:
@@ -222,9 +229,11 @@ Get-Content logs/logger.log -Wait -Tail 50
 
 | Tarea | Cómo |
 |---|---|
-| Cambiar mapeo I/O | Actualizar xlsx → reiniciar la app |
+| Corregir symbol/descripción/tipo de un tag | Pestaña **Sistema** → fila → **Editar**. Se guarda como override en la DB, no toca el xlsx. Recarga en caliente. |
+| Agregar tags nuevos (cambió el programa del PLC) | Regenerar xlsx desde EcoStruxure → **Sistema → ⬆ Subir nuevo xlsx**. Mostrar preview → confirmar. |
+| Volver a una versión anterior del xlsx | **Sistema → Backups…** → Restaurar. El activo se respalda primero. |
 | Cambiar credenciales | Editar `start.ps1` → reiniciar la tarea programada |
-| Ver eventos viejos | El sistema aplica FIFO con tope de 1.000.000 registros (~200-300 MB). Cuando se supera, borra los más antiguos. Para conservar más, hacer backups periódicos. |
+| Ver eventos viejos | El sistema aplica FIFO con tope de 1.000.000 registros (~200-300 MB). Cuando se supera, borra los más antiguos. Hacer backups periódicos para conservar más historia. |
 | Ver latencia del PLC | `http://<IP>:8000/healthz` o el header del dashboard |
 | Reiniciar app | `Restart-ScheduledTask -TaskName Datalogger` |
 
@@ -234,10 +243,10 @@ Get-Content logs/logger.log -Wait -Tail 50
 
 | Pestaña | Descripción |
 |---|---|
-| **Panel de Señales** | Estado actual de las 104 señales (animación al cambiar) |
+| **Panel de Señales** | Estado actual de cada I/O (animación al cambiar, filtros ON/OFF, búsqueda) |
 | **Registro de Eventos** | Historial con filtros, ordenamiento, paginado y auto-refresh |
 | **Contadores** | Total / ON / OFF / último evento por tag |
-| **Sistema** | Conexiones, desconexiones y arranques |
+| **Sistema** | Configuración de tags (editar overrides, subir/descargar xlsx con preview, gestionar backups) + eventos del sistema (conexiones, desconexiones, recargas, arranques) |
 
 **Atajos de teclado:** `1`–`4` cambian de tab, `/` enfoca búsqueda, `Esc` limpia filtros, `T` alterna tema claro/oscuro.
 
@@ -258,11 +267,20 @@ Todos los endpoints `/api/*` requieren cookie de sesión (login previo).
 | `GET /api/stats` | Agregados por tag |
 | `GET /api/sysevents` | Eventos del sistema |
 | `GET /api/export.xlsx` / `.csv` | Export con filtros aplicados |
+| `GET /api/tags` | Tags efectivos (xlsx + overrides) con fechas y contadores |
+| `PATCH /api/tags/{address}` | Crear/modificar un override (symbol, description, type) |
+| `DELETE /api/tags/{address}/override` | Quitar override (vuelve al valor del xlsx) |
+| `POST /api/tags/preview` | Subir xlsx en modo preview, devuelve diff + token de pending |
+| `POST /api/tags/upload/confirm` | Aplicar un pending previamente previsualizado |
+| `DELETE /api/tags/preview/{token}` | Descartar un pending |
+| `GET /api/tags/backups` | Lista de backups + xlsx activo |
+| `POST /api/tags/rollback` | Restaurar un backup como xlsx activo |
+| `GET /api/tags/download` / `/download/{name}` | Descargar xlsx activo o un backup |
 
 ---
 
 ## Protocolo
 
-- **Modbus TCP** — Función 03 (Read Holding Registers) sobre `%MW0–%MW50`, `%MW100–%MW114`, `%MW200–%MW203` (inputs espejados) y `%MW210–%MW212` (outputs espejados).
+- **Modbus TCP** — Función 03 (Read Holding Registers) sobre el rango de %MW que el PLC usa para espejar las I/O (definido en la columna `Flag HR` del xlsx; el logger calcula al arrancar los dos bloques contiguos que necesita: uno para inputs y uno para outputs).
 - Puerto por defecto: **502**.
-- Específico para M221 (cualquier PLC que mapee I/O en HRs sirve con la xlsx adecuada).
+- Específico para M221 (cualquier PLC que mapee I/O a bits dentro de Holding Registers sirve con la xlsx adecuada).
