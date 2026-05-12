@@ -139,7 +139,8 @@ function switchTab(name) {
   // Carga datos sólo al entrar al panel, y reconfigura el polling.
   if (name === 'events')    loadEvents();
   if (name === 'counts')    loadCounts();
-  if (name === 'sysevents') { loadSysEvents(); loadTags(); loadVersionInfo(); }
+  if (name === 'sysevents') loadSysEvents();
+  if (name === 'config')    enterConfigTab();
   reconfigureTimers();
 }
 
@@ -924,6 +925,63 @@ async function rollbackTo(name) {
 function openModal(id)  { $(id).hidden = false; }
 function closeModal(id) { $(id).hidden = true; }
 
+// ---------- gate de password para la pestaña Configuración ----------
+const configState = { authenticated: false };
+
+async function enterConfigTab() {
+  // Si ya sabemos que está autenticado, mostramos contenido directo.
+  // Si no, consultamos al server (la cookie puede estar válida de una
+  // visita anterior aunque no hayamos cargado el JS todavía).
+  try {
+    const { data } = await api('/api/config/status');
+    configState.authenticated = !!data.authenticated;
+  } catch (_) {
+    configState.authenticated = false;
+  }
+  renderConfigGate();
+}
+
+function renderConfigGate() {
+  const gate = $('config-gate');
+  const content = $('config-content');
+  if (configState.authenticated) {
+    gate.hidden = true;
+    content.hidden = false;
+    // Cargar las secciones internas.
+    loadTags();
+    loadVersionInfo();
+  } else {
+    gate.hidden = false;
+    content.hidden = true;
+    $('config-gate-error').hidden = true;
+    $('config-gate-password').value = '';
+    setTimeout(() => $('config-gate-password').focus(), 50);
+  }
+}
+
+async function submitConfigPassword(e) {
+  e.preventDefault();
+  const pw = $('config-gate-password').value;
+  const errEl = $('config-gate-error');
+  errEl.hidden = true;
+  try {
+    await apiMutate('/api/config/auth', { json: { password: pw } });
+    configState.authenticated = true;
+    renderConfigGate();
+  } catch (err) {
+    errEl.textContent = 'Contraseña incorrecta.';
+    errEl.hidden = false;
+    $('config-gate-password').select();
+  }
+}
+
+async function lockConfig() {
+  try { await apiMutate('/api/config/logout', { method: 'POST' }); }
+  catch (_) { /* no critical */ }
+  configState.authenticated = false;
+  renderConfigGate();
+}
+
 // ---------- update del software desde GitHub ----------
 const updateState = { lastInfo: null };
 
@@ -1162,7 +1220,7 @@ function readHash() {
   const m = window.location.hash.match(/^#(\w+)(?:\?(.*))?$/);
   if (!m) return;
   const tab = m[1];
-  if (['signals', 'events', 'counts', 'sysevents'].includes(tab)) {
+  if (['signals', 'events', 'counts', 'sysevents', 'config'].includes(tab)) {
     switchTab(tab);
   }
   if (tab === 'events' && m[2]) {
@@ -1337,6 +1395,10 @@ function wireEvents() {
     const btn = e.target.closest('[data-rollback-sha]');
     if (btn) rollbackTo(btn.dataset.rollbackSha, btn.dataset.rollbackSubject);
   });
+
+  // Password gate de configuración
+  $('config-gate-form').addEventListener('submit', submitConfigPassword);
+  $('btn-config-lock').addEventListener('click', lockConfig);
 }
 
 function wireKeyboard() {
@@ -1353,8 +1415,8 @@ function wireKeyboard() {
 
     if (inInput) return;
 
-    if (e.key >= '1' && e.key <= '4') {
-      const map = { '1': 'signals', '2': 'events', '3': 'counts', '4': 'sysevents' };
+    if (e.key >= '1' && e.key <= '5') {
+      const map = { '1': 'signals', '2': 'events', '3': 'counts', '4': 'sysevents', '5': 'config' };
       switchTab(map[e.key]);
       e.preventDefault();
       return;

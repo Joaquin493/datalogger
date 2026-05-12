@@ -29,6 +29,7 @@
   <button type="button" class="tab"        role="tab" aria-selected="false" aria-controls="panel-events"   id="tab-events"    data-tab="events">Registro de Eventos <span class="kbd-hint">2</span></button>
   <button type="button" class="tab"        role="tab" aria-selected="false" aria-controls="panel-counts"   id="tab-counts"    data-tab="counts">Contadores <span class="kbd-hint">3</span></button>
   <button type="button" class="tab"        role="tab" aria-selected="false" aria-controls="panel-sysevents" id="tab-sysevents" data-tab="sysevents">Sistema <span class="kbd-hint">4</span></button>
+  <button type="button" class="tab"        role="tab" aria-selected="false" aria-controls="panel-config"   id="tab-config"   data-tab="config">Configuración <span class="kbd-hint">5</span></button>
 </div>
 
 <!-- SEÑALES -->
@@ -167,106 +168,6 @@
 <!-- SISTEMA -->
 <div id="panel-sysevents" class="panel" role="tabpanel" aria-labelledby="tab-sysevents" hidden>
 
-  <!-- Configuración de tags (xlsx + overrides) -->
-  <section class="sys-section">
-    <h3 class="sys-section-title">Configuración de tags</h3>
-    <div class="tags-info-bar">
-      <div class="tags-info">
-        <div><strong>Archivo activo:</strong> <span id="tags-active-file">—</span></div>
-        <div><strong>Subido:</strong> <span id="tags-active-mtime">—</span></div>
-        <div><strong>Última edición:</strong> <span id="tags-last-edit">—</span></div>
-        <div><strong>Tags:</strong> <span id="tags-count">—</span></div>
-        <div><strong>Con override:</strong> <span id="tags-overrides">—</span></div>
-      </div>
-      <div class="tags-actions">
-        <a id="btn-download-xlsx" class="btn" href="/api/tags/download">⬇ Descargar xlsx</a>
-        <label class="btn" for="upload-xlsx-input">⬆ Subir nuevo xlsx</label>
-        <input id="upload-xlsx-input" type="file" accept=".xlsx" hidden>
-        <button type="button" class="btn" id="btn-show-backups">Backups…</button>
-        <button type="button" class="btn" id="btn-reload-tags">↺ Recargar</button>
-      </div>
-    </div>
-    <div id="tags-upload-msg" class="sys-msg" hidden></div>
-    <div class="sys-hint">
-      Las correcciones desde acá se guardan como <em>overrides</em> sin tocar el xlsx original.
-      Para agregar tags nuevos hay que regenerar la planilla desde EcoStruxure (programa del PLC) y subirla con <strong>⬆ Subir nuevo xlsx</strong>.
-    </div>
-
-    <div class="toolbar tags-toolbar">
-      <div class="search-box">
-        <span class="search-icon" aria-hidden="true">⌕</span>
-        <input type="text" id="tags-search" placeholder="Buscar address, symbol o descripción..." aria-label="Buscar tags">
-      </div>
-      <label class="filter-inline"><input type="checkbox" id="tags-only-overridden"> solo con override</label>
-    </div>
-    <div class="table-wrap" id="tags-wrap">
-      <div class="loading-overlay" id="tags-loading" hidden><div class="spinner" aria-label="Cargando"></div></div>
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">Address</th>
-            <th scope="col">Symbol</th>
-            <th scope="col">Descripción</th>
-            <th scope="col">Tipo</th>
-            <th scope="col">Acciones</th>
-          </tr>
-        </thead>
-        <tbody id="tags-body"></tbody>
-      </table>
-      <div id="tags-empty" class="empty-state" hidden>Sin tags</div>
-    </div>
-  </section>
-
-  <!-- Actualización del software -->
-  <section class="sys-section">
-    <h3 class="sys-section-title">Actualización del software</h3>
-    <div class="update-bar">
-      <div class="update-info">
-        <div><strong>Versión actual:</strong> <span id="upd-current" class="mono">—</span></div>
-        <div><strong>Fecha:</strong> <span id="upd-current-date">—</span></div>
-        <div><strong>Branch:</strong> <span id="upd-branch" class="mono">—</span></div>
-        <div id="upd-status-wrap"><strong>Estado:</strong> <span id="upd-status">—</span></div>
-      </div>
-      <div class="update-actions">
-        <button type="button" class="btn" id="btn-check-updates">↺ Buscar actualizaciones</button>
-        <button type="button" class="btn btn-primary" id="btn-apply-update" hidden>⚡ Actualizar y reiniciar</button>
-      </div>
-    </div>
-    <div id="upd-pending" class="update-pending" hidden>
-      <div class="update-pending-header">
-        <strong id="upd-pending-count">0</strong> commit(s) pendiente(s)
-        <span id="upd-deps-warn" class="upd-warn" hidden>· requirements.txt cambió → se va a correr pip install</span>
-      </div>
-      <ul id="upd-pending-list" class="update-pending-list"></ul>
-    </div>
-    <div id="upd-msg" class="sys-msg" hidden></div>
-
-    <details class="version-history" id="version-history">
-      <summary>Historial de versiones (rollback)</summary>
-      <div class="version-history-body">
-        <div class="modal-hint">
-          Volver a una versión anterior aplica <code>git reset --hard</code> al commit elegido y reinicia.
-          Si más adelante querés volver a la última, apretá <strong>Buscar actualizaciones</strong> y luego <strong>Actualizar</strong>.
-        </div>
-        <div class="table-wrap history-table" id="history-wrap">
-          <div class="loading-overlay" id="history-loading" hidden><div class="spinner"></div></div>
-          <table>
-            <thead>
-              <tr>
-                <th scope="col" class="col-sha">SHA</th>
-                <th scope="col" class="col-date">Fecha</th>
-                <th scope="col">Descripción</th>
-                <th scope="col" class="col-action">Acción</th>
-              </tr>
-            </thead>
-            <tbody id="history-body"></tbody>
-          </table>
-          <div id="history-empty" class="empty-state" hidden>Sin historial disponible</div>
-        </div>
-      </div>
-    </details>
-  </section>
-
   <!-- Eventos del sistema -->
   <section class="sys-section">
     <h3 class="sys-section-title">Eventos del sistema</h3>
@@ -289,6 +190,134 @@
       <div id="sysev-empty" class="empty-state" hidden>Sin eventos del sistema</div>
     </div>
   </section>
+</div>
+
+<!-- CONFIGURACIÓN (protegido por password) -->
+<div id="panel-config" class="panel" role="tabpanel" aria-labelledby="tab-config" hidden>
+
+  <!-- Password gate: visible mientras no estés autenticado -->
+  <div id="config-gate" class="config-gate" hidden>
+    <div class="config-gate-card">
+      <h3>Configuración protegida</h3>
+      <p class="modal-hint">Esta sección permite editar el mapeo de tags y actualizar el software del sistema. Ingresá la contraseña para continuar.</p>
+      <form id="config-gate-form" autocomplete="off">
+        <label>Contraseña
+          <input type="password" id="config-gate-password" autocomplete="current-password" required>
+        </label>
+        <div id="config-gate-error" class="sys-msg error" hidden></div>
+        <div class="modal-actions">
+          <button type="submit" class="btn btn-primary">Desbloquear</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Contenido real: oculto hasta que pase el gate -->
+  <div id="config-content" hidden>
+    <div class="config-header">
+      <button type="button" class="btn btn-small" id="btn-config-lock" title="Bloquear configuración">🔒 Bloquear</button>
+    </div>
+
+    <!-- Configuración de tags (xlsx + overrides) -->
+    <section class="sys-section">
+      <h3 class="sys-section-title">Configuración de tags</h3>
+      <div class="tags-info-bar">
+        <div class="tags-info">
+          <div><strong>Archivo activo:</strong> <span id="tags-active-file">—</span></div>
+          <div><strong>Subido:</strong> <span id="tags-active-mtime">—</span></div>
+          <div><strong>Última edición:</strong> <span id="tags-last-edit">—</span></div>
+          <div><strong>Tags:</strong> <span id="tags-count">—</span></div>
+          <div><strong>Con override:</strong> <span id="tags-overrides">—</span></div>
+        </div>
+        <div class="tags-actions">
+          <a id="btn-download-xlsx" class="btn" href="/api/tags/download">⬇ Descargar xlsx</a>
+          <label class="btn" for="upload-xlsx-input">⬆ Subir nuevo xlsx</label>
+          <input id="upload-xlsx-input" type="file" accept=".xlsx" hidden>
+          <button type="button" class="btn" id="btn-show-backups">Backups…</button>
+          <button type="button" class="btn" id="btn-reload-tags">↺ Recargar</button>
+        </div>
+      </div>
+      <div id="tags-upload-msg" class="sys-msg" hidden></div>
+      <div class="sys-hint">
+        Las correcciones desde acá se guardan como <em>overrides</em> sin tocar el xlsx original.
+        Para agregar tags nuevos hay que regenerar la planilla desde EcoStruxure (programa del PLC) y subirla con <strong>⬆ Subir nuevo xlsx</strong>.
+      </div>
+
+      <div class="toolbar tags-toolbar">
+        <div class="search-box">
+          <span class="search-icon" aria-hidden="true">⌕</span>
+          <input type="text" id="tags-search" placeholder="Buscar address, symbol o descripción..." aria-label="Buscar tags">
+        </div>
+        <label class="filter-inline"><input type="checkbox" id="tags-only-overridden"> solo con override</label>
+      </div>
+      <div class="table-wrap" id="tags-wrap">
+        <div class="loading-overlay" id="tags-loading" hidden><div class="spinner" aria-label="Cargando"></div></div>
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Address</th>
+              <th scope="col">Symbol</th>
+              <th scope="col">Descripción</th>
+              <th scope="col">Tipo</th>
+              <th scope="col">Acciones</th>
+            </tr>
+          </thead>
+          <tbody id="tags-body"></tbody>
+        </table>
+        <div id="tags-empty" class="empty-state" hidden>Sin tags</div>
+      </div>
+    </section>
+
+    <!-- Actualización del software -->
+    <section class="sys-section">
+      <h3 class="sys-section-title">Actualización del software</h3>
+      <div class="update-bar">
+        <div class="update-info">
+          <div><strong>Versión actual:</strong> <span id="upd-current" class="mono">—</span></div>
+          <div><strong>Fecha:</strong> <span id="upd-current-date">—</span></div>
+          <div><strong>Branch:</strong> <span id="upd-branch" class="mono">—</span></div>
+          <div id="upd-status-wrap"><strong>Estado:</strong> <span id="upd-status">—</span></div>
+        </div>
+        <div class="update-actions">
+          <button type="button" class="btn" id="btn-check-updates">↺ Buscar actualizaciones</button>
+          <button type="button" class="btn btn-primary" id="btn-apply-update" hidden>⚡ Actualizar y reiniciar</button>
+        </div>
+      </div>
+      <div id="upd-pending" class="update-pending" hidden>
+        <div class="update-pending-header">
+          <strong id="upd-pending-count">0</strong> commit(s) pendiente(s)
+          <span id="upd-deps-warn" class="upd-warn" hidden>· requirements.txt cambió → se va a correr pip install</span>
+        </div>
+        <ul id="upd-pending-list" class="update-pending-list"></ul>
+      </div>
+      <div id="upd-msg" class="sys-msg" hidden></div>
+
+      <details class="version-history" id="version-history">
+        <summary>Historial de versiones (rollback)</summary>
+        <div class="version-history-body">
+          <div class="modal-hint">
+            Volver a una versión anterior aplica <code>git reset --hard</code> al commit elegido y reinicia.
+            Si más adelante querés volver a la última, apretá <strong>Buscar actualizaciones</strong> y luego <strong>Actualizar</strong>.
+          </div>
+          <div class="table-wrap history-table" id="history-wrap">
+            <div class="loading-overlay" id="history-loading" hidden><div class="spinner"></div></div>
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col" class="col-sha">SHA</th>
+                  <th scope="col" class="col-date">Fecha</th>
+                  <th scope="col">Descripción</th>
+                  <th scope="col" class="col-action">Acción</th>
+                </tr>
+              </thead>
+              <tbody id="history-body"></tbody>
+            </table>
+            <div id="history-empty" class="empty-state" hidden>Sin historial disponible</div>
+          </div>
+        </div>
+      </details>
+    </section>
+  </div>
 </div>
 
 <!-- Modal: progreso de update (reinicio en curso) -->
@@ -410,7 +439,7 @@
 </div>
 
 <div class="kbd-help" aria-hidden="true">
-  <kbd>1</kbd>–<kbd>4</kbd> tabs · <kbd>/</kbd> buscar · <kbd>Esc</kbd> limpiar · <kbd>T</kbd> tema
+  <kbd>1</kbd>–<kbd>5</kbd> tabs · <kbd>/</kbd> buscar · <kbd>Esc</kbd> limpiar · <kbd>T</kbd> tema
 </div>
 
 <script src="/static/app.js"></script>

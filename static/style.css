@@ -1076,6 +1076,43 @@ tr.tag-overridden td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 tr.history-current td { background: rgba(0,149,208,.06); font-weight: 600; }
 tr.history-current td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 
+/* ====================  Gate de Configuración  ==================== */
+.config-gate {
+  display: flex; justify-content: center; align-items: flex-start;
+  padding: 40px 20px;
+}
+.config-gate-card {
+  width: 100%; max-width: 420px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 24px 26px;
+  box-shadow: var(--shadow-lg);
+  display: flex; flex-direction: column; gap: 14px;
+}
+.config-gate-card h3 { margin: 0; font-size: 16px; }
+.config-gate-card .modal-hint { margin: 0; padding: 8px 10px; }
+.config-gate-card form { display: flex; flex-direction: column; gap: 12px; }
+.config-gate-card label {
+  display: flex; flex-direction: column; gap: 4px;
+  font-size: 12px; color: var(--text2); font-weight: 600;
+}
+.config-gate-card input {
+  padding: 8px 10px;
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--ui);
+  font-size: 13px;
+}
+.config-gate-card input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+.config-header {
+  display: flex; justify-content: flex-end;
+  margin-bottom: 8px;
+}
+
 /* Anchos definidos y vertical-align centrado para que el botón y el texto
    queden alineados aunque la descripción ocupe varias líneas. */
 .history-table table { table-layout: fixed; width: 100%; }

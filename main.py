@@ -99,6 +99,12 @@ USERS = {
     os.environ.get("APP_USER", "admin"): os.environ.get("APP_PASSWORD", "admin"),
 }
 
+# Password adicional para la pestaña Configuración (tag overrides + auto-update).
+# Es una segunda capa sobre el login normal — limita qué operadores pueden
+# tocar la configuración del sistema y el código.
+CONFIG_PASSWORD = os.environ.get("CONFIG_PASSWORD", "pro986")
+CONFIG_TOKEN = secrets.token_hex(32)
+
 
 def check_session(request: Request) -> bool:
     return request.cookies.get("session") == SESSION_TOKEN
@@ -107,6 +113,18 @@ def check_session(request: Request) -> bool:
 def require_session(request: Request):
     if not check_session(request):
         raise HTTPException(status_code=401, detail="No autorizado")
+
+
+def check_config_session(request: Request) -> bool:
+    return request.cookies.get("config_session") == CONFIG_TOKEN
+
+
+def require_config_session(request: Request):
+    """Doble gate: requiere login normal + auth de config."""
+    if not check_session(request):
+        raise HTTPException(status_code=401, detail="No autorizado")
+    if not check_config_session(request):
+        raise HTTPException(status_code=403, detail="Requiere contraseña de configuración")
 
 
 # ---------------------------------------------------------------------------
@@ -211,6 +229,32 @@ async def login(request: Request):
 def logout():
     response = RedirectResponse("/login", status_code=302)
     response.delete_cookie("session")
+    response.delete_cookie("config_session")
+    return response
+
+
+@app.get("/api/config/status", dependencies=[Depends(require_session)])
+def api_config_status(request: Request):
+    """Indica si el usuario actual ya pasó el gate de config."""
+    return {"authenticated": check_config_session(request)}
+
+
+@app.post("/api/config/auth", dependencies=[Depends(require_session)])
+async def api_config_auth(request: Request):
+    body = await request.json()
+    password = (body.get("password") or "").strip()
+    if password != CONFIG_PASSWORD:
+        raise HTTPException(401, "Contraseña incorrecta")
+    response = Response(content='{"ok":true}', media_type="application/json")
+    response.set_cookie("config_session", CONFIG_TOKEN, httponly=True, samesite="lax")
+    return response
+
+
+@app.post("/api/config/logout", dependencies=[Depends(require_session)])
+def api_config_logout():
+    """Cierra solo la sesión de config, manteniendo el login principal."""
+    response = Response(content='{"ok":true}', media_type="application/json")
+    response.delete_cookie("config_session")
     return response
 
 
@@ -572,7 +616,7 @@ def _list_backups() -> list[dict]:
     return items
 
 
-@app.get("/api/tags", dependencies=[Depends(require_session)])
+@app.get("/api/tags", dependencies=[Depends(require_config_session)])
 def api_tags():
     """Tags efectivos = xlsx activo con overrides aplicados.
 
@@ -621,7 +665,7 @@ def api_tags():
     }
 
 
-@app.patch("/api/tags/{address:path}", dependencies=[Depends(require_session)])
+@app.patch("/api/tags/{address:path}", dependencies=[Depends(require_config_session)])
 async def api_tag_patch(address: str, request: Request):
     body = await request.json()
     symbol = body.get("symbol")
@@ -659,7 +703,7 @@ async def api_tag_patch(address: str, request: Request):
     return {"ok": True, "address": address}
 
 
-@app.delete("/api/tags/{address:path}/override", dependencies=[Depends(require_session)])
+@app.delete("/api/tags/{address:path}/override", dependencies=[Depends(require_config_session)])
 def api_tag_override_delete(address: str):
     conn = _db_connect_unrowed()
     try:
@@ -816,7 +860,7 @@ def _compute_diff(old_tags: list, new_tags: list, override_addrs: set) -> dict:
     }
 
 
-@app.post("/api/tags/preview", dependencies=[Depends(require_session)])
+@app.post("/api/tags/preview", dependencies=[Depends(require_config_session)])
 async def api_tags_preview(file: UploadFile = File(...)):
     """Valida y compara contra el xlsx activo SIN reemplazarlo.
     Devuelve un diff + un token para confirmar el reemplazo con
@@ -870,7 +914,7 @@ async def api_tags_preview(file: UploadFile = File(...)):
     }
 
 
-@app.post("/api/tags/upload/confirm", dependencies=[Depends(require_session)])
+@app.post("/api/tags/upload/confirm", dependencies=[Depends(require_config_session)])
 async def api_tags_upload_confirm(request: Request):
     body = await request.json()
     token = (body.get("pending_id") or "").strip()
@@ -912,7 +956,7 @@ async def api_tags_upload_confirm(request: Request):
     return {"ok": True, "backup": backed_up, "summary": diff["summary"]}
 
 
-@app.delete("/api/tags/preview/{token}", dependencies=[Depends(require_session)])
+@app.delete("/api/tags/preview/{token}", dependencies=[Depends(require_config_session)])
 def api_tags_preview_cancel(token: str):
     p = _pending_path(token)
     if p.exists():
@@ -921,7 +965,7 @@ def api_tags_preview_cancel(token: str):
     return {"ok": True}
 
 
-@app.get("/api/tags/backups", dependencies=[Depends(require_session)])
+@app.get("/api/tags/backups", dependencies=[Depends(require_config_session)])
 def api_tags_backups():
     items = _list_backups()
     active = None
@@ -940,7 +984,7 @@ def api_tags_backups():
     return {"active": active, "items": items}
 
 
-@app.post("/api/tags/rollback", dependencies=[Depends(require_session)])
+@app.post("/api/tags/rollback", dependencies=[Depends(require_config_session)])
 async def api_tags_rollback(request: Request):
     body = await request.json()
     name = (body.get("backup") or "").strip()
@@ -962,7 +1006,7 @@ async def api_tags_rollback(request: Request):
     return {"ok": True, "restored": name, "backup": backed_up}
 
 
-@app.get("/api/tags/download", dependencies=[Depends(require_session)])
+@app.get("/api/tags/download", dependencies=[Depends(require_config_session)])
 def api_tags_download():
     if not os.path.exists(ACTIVE_XLSX):
         raise HTTPException(404, "No hay xlsx activo.")
@@ -973,7 +1017,7 @@ def api_tags_download():
     )
 
 
-@app.get("/api/tags/download/{name}", dependencies=[Depends(require_session)])
+@app.get("/api/tags/download/{name}", dependencies=[Depends(require_config_session)])
 def api_tags_download_backup(name: str):
     if "/" in name or "\\" in name or ".." in name:
         raise HTTPException(400, "Nombre inválido.")
@@ -1096,7 +1140,7 @@ def _parse_commit_log(text: str) -> list[dict]:
     return out
 
 
-@app.get("/api/admin/version", dependencies=[Depends(require_session)])
+@app.get("/api/admin/version", dependencies=[Depends(require_config_session)])
 def api_admin_version():
     """Devuelve commit actual + commits pendientes en origin/main.
 
@@ -1190,7 +1234,7 @@ def _restart_self_after_delay(delay_s: float = 1.5):
     threading.Thread(target=_go, daemon=True).start()
 
 
-@app.post("/api/admin/update", dependencies=[Depends(require_session)])
+@app.post("/api/admin/update", dependencies=[Depends(require_config_session)])
 def api_admin_update(background_tasks: BackgroundTasks):
     """Pullea, instala deps si cambiaron, y se reinicia.
 
@@ -1291,7 +1335,7 @@ def api_admin_update(background_tasks: BackgroundTasks):
     }
 
 
-@app.get("/api/admin/history", dependencies=[Depends(require_session)])
+@app.get("/api/admin/history", dependencies=[Depends(require_config_session)])
 def api_admin_history(limit: int = Query(30, ge=1, le=200)):
     """Devuelve los últimos N commits de origin/main (timeline unificado
     al que se puede ir adelante o atrás).
@@ -1338,7 +1382,7 @@ def api_admin_history(limit: int = Query(30, ge=1, le=200)):
     }
 
 
-@app.post("/api/admin/rollback", dependencies=[Depends(require_session)])
+@app.post("/api/admin/rollback", dependencies=[Depends(require_config_session)])
 async def api_admin_rollback(request: Request, background_tasks: BackgroundTasks):
     """Hace `git reset --hard <sha>` para volver a un commit anterior.
 
