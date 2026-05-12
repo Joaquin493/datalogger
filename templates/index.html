@@ -240,6 +240,32 @@
       <ul id="upd-pending-list" class="update-pending-list"></ul>
     </div>
     <div id="upd-msg" class="sys-msg" hidden></div>
+
+    <details class="version-history" id="version-history">
+      <summary>Historial de versiones (rollback)</summary>
+      <div class="version-history-body">
+        <div class="modal-hint">
+          Volver a una versión anterior aplica <code>git reset --hard</code> al commit elegido y reinicia.
+          Si más adelante querés volver a la última, apretá <strong>Buscar actualizaciones</strong> y luego <strong>Actualizar</strong>.
+        </div>
+        <div class="table-wrap" id="history-wrap">
+          <div class="loading-overlay" id="history-loading" hidden><div class="spinner"></div></div>
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">SHA</th>
+                <th scope="col">Fecha</th>
+                <th scope="col">Autor</th>
+                <th scope="col">Descripción</th>
+                <th scope="col"></th>
+              </tr>
+            </thead>
+            <tbody id="history-body"></tbody>
+          </table>
+          <div id="history-empty" class="empty-state" hidden>Sin historial disponible</div>
+        </div>
+      </div>
+    </details>
   </section>
 
   <!-- Eventos del sistema -->

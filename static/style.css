@@ -1047,3 +1047,31 @@ tr.tag-overridden td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .update-pending-list .upd-subject { flex: 1; color: var(--text); }
 
 .update-spinner { display: flex; justify-content: center; padding: 12px 0; }
+
+.version-history {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg2);
+}
+.version-history > summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text2);
+  user-select: none;
+}
+.version-history > summary:hover { color: var(--accent); }
+.version-history[open] > summary { border-bottom: 1px solid var(--border); }
+.version-history-body { padding: 10px 12px; }
+.version-history-body code {
+  background: var(--bg3);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+tr.history-current td { background: rgba(0,149,208,.06); font-weight: 600; }
+tr.history-current td:first-child { box-shadow: inset 3px 0 0 var(--accent); }

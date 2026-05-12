@@ -1212,3 +1212,136 @@ def api_admin_update(background_tasks: BackgroundTasks):
         "deps_changed":  deps_changed,
         "restart_in_s":  1.5,
     }
+
+
+@app.get("/api/admin/history", dependencies=[Depends(require_session)])
+def api_admin_history(limit: int = Query(30, ge=1, le=200)):
+    """Devuelve los últimos N commits de origin/main (timeline unificado
+    al que se puede ir adelante o atrás).
+
+    No hace fetch — refleja lo que está en el repo local. Para datos
+    frescos, primero apretá "Buscar actualizaciones".
+    """
+    if not (_REPO_DIR / ".git").exists():
+        raise HTTPException(500, "El directorio del proyecto no es un repo git.")
+
+    current_sha = _git_safe("rev-parse", "HEAD") or ""
+    # Usamos el SHA largo para comparar, pero mostramos el corto.
+    log_out = _git_safe(
+        "log", f"-{limit}", "--format=%H|%h|%ci|%an|%s", "origin/main"
+    ) or ""
+
+    items = []
+    for line in log_out.splitlines():
+        parts = line.split("|", 4)
+        if len(parts) != 5:
+            continue
+        full_sha, short_sha, date, author, subject = parts
+        items.append({
+            "sha":        short_sha,
+            "full_sha":   full_sha,
+            "date":       date,
+            "author":     author,
+            "subject":    subject,
+            "is_current": full_sha == current_sha,
+        })
+
+    return {"current_sha": current_sha[:7] if current_sha else None, "items": items}
+
+
+@app.post("/api/admin/rollback", dependencies=[Depends(require_session)])
+async def api_admin_rollback(request: Request, background_tasks: BackgroundTasks):
+    """Hace `git reset --hard <sha>` para volver a un commit anterior.
+
+    Solo acepta SHAs que estén en el historial de origin/main (no permite
+    saltar a commits arbitrarios). Si requirements.txt difiere, corre
+    pip install. Se reinicia con os.execv igual que el update.
+    """
+    body = await request.json()
+    sha = (body.get("sha") or "").strip()
+    if not re.fullmatch(r"[A-Fa-f0-9]{7,40}", sha):
+        raise HTTPException(400, "SHA inválido.")
+
+    # No aplicar si hay cambios locales sin commitear.
+    if _git_safe("status", "--porcelain", "--untracked-files=no"):
+        raise HTTPException(409, "Hay cambios locales sin commitear. Resolver primero.")
+
+    # Resolver el SHA a su forma larga (acepta abreviado).
+    try:
+        full_sha = _git("rev-parse", "--verify", sha + "^{commit}").stdout.strip()
+    except subprocess.CalledProcessError:
+        raise HTTPException(404, f"El SHA {sha} no existe en el repo local.")
+
+    # Validar que el SHA esté en el historial de origin/main (no aceptamos
+    # commits sueltos / branches random).
+    check = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", full_sha, "origin/main"],
+        cwd=str(_REPO_DIR),
+        capture_output=True,
+        timeout=10,
+    )
+    if check.returncode != 0:
+        raise HTTPException(400, "El SHA no está en el historial de origin/main.")
+
+    old_sha = _git_safe("rev-parse", "HEAD") or "?"
+    if old_sha == full_sha:
+        return {"ok": True, "rolled_back": False, "message": "Ya estás en esa versión.", "sha": full_sha[:7]}
+
+    # ¿requirements.txt difiere entre el actual y el target?
+    deps_changed = False
+    try:
+        diff_files = _git("diff", "--name-only", old_sha, full_sha).stdout
+        deps_changed = "requirements.txt" in diff_files.splitlines()
+    except Exception:
+        pass
+
+    # Reset --hard al SHA pedido.
+    try:
+        _git("reset", "--hard", full_sha)
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(500, f"git reset fallo: {e.stderr.strip() or e.stdout.strip()}")
+
+    # pip install si requirements cambió.
+    if deps_changed:
+        pip_args = [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"]
+        if sys.prefix == sys.base_prefix:
+            pip_args.append("--user")
+        try:
+            subprocess.run(
+                pip_args, cwd=str(_REPO_DIR),
+                capture_output=True, text=True, timeout=300, check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            raise HTTPException(
+                500,
+                f"pip install fallo despues del rollback a {full_sha[:7]}. "
+                f"Resolver manualmente. Error: {(e.stderr or e.stdout or '').strip()[-500:]}"
+            )
+
+    # Auditoría.
+    try:
+        conn = _db_connect_unrowed()
+        try:
+            conn.execute(
+                "INSERT INTO system_events(event_type, description, timestamp) VALUES (?, ?, ?)",
+                ("ROLLBACK",
+                 f"Rollback {old_sha[:7]} -> {full_sha[:7]}"
+                 + (" + pip install" if deps_changed else ""),
+                 _now_ts()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+    background_tasks.add_task(_restart_self_after_delay)
+
+    return {
+        "ok":            True,
+        "rolled_back":   True,
+        "old_sha":       old_sha,
+        "new_sha":       full_sha,
+        "deps_changed":  deps_changed,
+        "restart_in_s":  1.5,
+    }

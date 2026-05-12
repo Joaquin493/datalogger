@@ -1019,6 +1019,63 @@ async function applyUpdate() {
   }
 }
 
+// ---------- historial de versiones / rollback ----------
+async function loadHistory() {
+  setLoading('history-loading', true);
+  const tb = $('history-body');
+  try {
+    const { data } = await api('/api/admin/history?limit=30');
+    if (!data.items.length) {
+      tb.innerHTML = '';
+      $('history-empty').hidden = false;
+      return;
+    }
+    $('history-empty').hidden = true;
+    tb.innerHTML = data.items.map((c) => `
+      <tr class="${c.is_current ? 'history-current' : ''}">
+        <td class="mono">${esc(c.sha)}${c.is_current ? ' <span class="ov-badge" title="Versión actual">●</span>' : ''}</td>
+        <td class="ts">${esc(fmtDateTime(c.date.replace(' ', 'T')))}</td>
+        <td>${esc(c.author)}</td>
+        <td>${esc(c.subject)}</td>
+        <td class="row-actions">
+          ${c.is_current
+            ? '<span class="hint-inline">actual</span>'
+            : `<button type="button" class="btn btn-small" data-rollback-sha="${esc(c.sha)}" data-rollback-subject="${esc(c.subject)}">Ir a esta versión</button>`}
+        </td>
+      </tr>
+    `).join('');
+  } catch (e) {
+    tb.innerHTML = `<tr><td colspan="5" class="bad">Error: ${esc(e.message)}</td></tr>`;
+  } finally {
+    setLoading('history-loading', false);
+  }
+}
+
+async function rollbackTo(sha, subject) {
+  if (!confirm(`Volver a la versión ${sha} ("${subject}")?\n\nEsto descarta commits posteriores localmente y reinicia. Si después querés volver a la última versión, hacelo con "Buscar actualizaciones" → "Actualizar".`)) return;
+
+  $('btn-check-updates').disabled = true;
+  $('btn-apply-update').disabled = true;
+  showUpdMsg(`Rollback a ${sha} en curso...`, 'info');
+
+  try {
+    const r = await apiMutate('/api/admin/rollback', { method: 'POST', json: { sha } });
+    if (!r.rolled_back) {
+      showUpdMsg(r.message || 'Ya estabas en esa versión.', 'ok');
+      $('btn-check-updates').disabled = false;
+      return;
+    }
+    openModal('modal-update-progress');
+    $('upd-progress-msg').textContent = `Volviendo a ${sha} y reiniciando…`;
+    await waitForServerBack(r.old_sha, r.new_sha);
+    // Después de waitForServerBack se recarga loadVersionInfo. También refrescamos historial.
+    loadHistory();
+  } catch (e) {
+    showUpdMsg('Error en rollback: ' + e.message, 'error');
+    $('btn-check-updates').disabled = false;
+  }
+}
+
 // Polling de /healthz hasta que vuelva, máximo 60s. Tras volver,
 // recarga version info para confirmar que el SHA cambió.
 async function waitForServerBack(oldSha, newSha) {
@@ -1048,6 +1105,8 @@ async function waitForServerBack(oldSha, newSha) {
     }
     updateState.lastInfo = data;
     renderVersionInfo(data);
+    // Si el historial está expandido, refrescarlo también.
+    if ($('version-history').open) loadHistory();
   } catch (e) {
     closeModal('modal-update-progress');
     showUpdMsg('No se pudo confirmar la nueva versión: ' + e.message, 'error');
@@ -1267,6 +1326,15 @@ function wireEvents() {
   // Update del software
   $('btn-check-updates').addEventListener('click', loadVersionInfo);
   $('btn-apply-update').addEventListener('click', applyUpdate);
+
+  // Historial — carga lazy al expandir el <details>
+  $('version-history').addEventListener('toggle', (e) => {
+    if (e.target.open) loadHistory();
+  });
+  $('history-body').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-rollback-sha]');
+    if (btn) rollbackTo(btn.dataset.rollbackSha, btn.dataset.rollbackSubject);
+  });
 }
 
 function wireKeyboard() {
