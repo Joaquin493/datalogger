@@ -1444,10 +1444,16 @@ def api_admin_logs(
     for raw in raw_lines:
         m = _LOG_LINE_RE.match(raw)
         if m:
+            lvl = m.group(2).strip()
+            lgr = m.group(3).strip()
+            # Promovemos INFO de plc_logger.events a un "nivel" virtual EVENT,
+            # asi se visualizan distinto en la UI y se pueden filtrar solos.
+            if lvl == "INFO" and lgr.endswith(".events"):
+                lvl = "EVENT"
             parsed.append({
                 "ts":     m.group(1),
-                "level":  m.group(2).strip(),
-                "logger": m.group(3).strip(),
+                "level":  lvl,
+                "logger": lgr,
                 "msg":    m.group(4),
             })
         else:
@@ -1455,22 +1461,38 @@ def api_admin_logs(
             parsed.append({"ts": None, "level": None, "logger": None, "msg": raw})
 
     # Filtro de nivel.
-    LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
-    if level.upper() in LEVEL_ORDER:
-        floor = LEVEL_ORDER[level.upper()]
-        # Mantenemos continuaciones (level=None) si la línea anterior fue mostrada.
+    # EVENT no tiene "floor" — es un filtro especial que muestra SOLO los
+    # eventos de cambio de tag. Los floors numéricos son la jerarquía estándar.
+    level_up = level.upper()
+    if level_up == "EVENT":
         keep = []
         last_shown = False
         for line in parsed:
             if line["level"] is None:
                 if last_shown:
                     keep.append(line)
-            elif LEVEL_ORDER.get(line["level"], 0) >= floor:
+            elif line["level"] == "EVENT":
                 keep.append(line)
                 last_shown = True
             else:
                 last_shown = False
         parsed = keep
+    else:
+        LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "EVENT": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
+        if level_up in LEVEL_ORDER:
+            floor = LEVEL_ORDER[level_up]
+            keep = []
+            last_shown = False
+            for line in parsed:
+                if line["level"] is None:
+                    if last_shown:
+                        keep.append(line)
+                elif LEVEL_ORDER.get(line["level"], 0) >= floor:
+                    keep.append(line)
+                    last_shown = True
+                else:
+                    last_shown = False
+            parsed = keep
 
     return {"lines": parsed, "file": str(_LOG_PATH), "exists": True, "size": size}
 

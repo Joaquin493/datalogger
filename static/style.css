@@ -1318,6 +1318,8 @@ tr.history-current td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .log-line.level-DEBUG .log-level    { color: #6b7994; }
 .log-line.level-INFO     { color: #cdd6e1; }
 .log-line.level-INFO .log-level     { color: #7fc8ff; }
+.log-line.level-EVENT    { color: #aff2c0; }
+.log-line.level-EVENT .log-level    { color: #61e6a4; font-weight: 700; }
 .log-line.level-WARNING  { color: #ffd17a; }
 .log-line.level-WARNING .log-level  { color: #ffb648; }
 .log-line.level-ERROR    { color: #ff8a92; }
