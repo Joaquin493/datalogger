@@ -5,9 +5,19 @@ import logging.handlers
 import sys
 import os
 import threading
+from collections import deque
 from datetime import datetime
 from pymodbus.client import ModbusTcpClient
 from tag_loader import load_tags
+
+# Marca de tiempo del arranque del proceso — para calcular uptime sin
+# depender de systemd. Si el proceso se reinicia via os.execv (auto-update),
+# esto se resetea al momento del nuevo proceso, lo cual es lo correcto.
+PROCESS_START = time.time()
+
+# Ring buffer con las últimas N latencias del ciclo Modbus. Se expone vía
+# /api/status para alimentar el sparkline del dashboard.
+LATENCY_HISTORY: deque = deque(maxlen=60)
 
 # ---------------------------------------------------------------------------
 # LOGGING SETUP
@@ -417,6 +427,7 @@ def start_logger():
                 connection_status["last_error"]     = None
                 connection_status["retries"]        = 0
                 connection_status["last_cycle_ms"]  = round(t_ms, 1)
+                LATENCY_HISTORY.append(round(t_ms, 1))
 
                 log_modbus.debug(f"Ciclo de lectura completo en {t_ms:.1f} ms")
 

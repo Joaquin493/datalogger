@@ -168,6 +168,70 @@
 <!-- SISTEMA -->
 <div id="panel-sysevents" class="panel" role="tabpanel" aria-labelledby="tab-sysevents" hidden>
 
+  <!-- Dashboard de estado en vivo -->
+  <section class="sys-section">
+    <h3 class="sys-section-title">Estado del sistema</h3>
+    <div class="status-grid">
+      <div class="status-card" id="card-plc">
+        <div class="status-card-label">Estado PLC</div>
+        <div class="status-card-value">
+          <span class="status-dot" id="card-plc-dot"></span>
+          <span id="card-plc-state">—</span>
+        </div>
+        <div class="status-card-sub" id="card-plc-sub">—</div>
+      </div>
+
+      <div class="status-card" id="card-latency">
+        <div class="status-card-label">Latencia Modbus</div>
+        <div class="status-card-value">
+          <span id="card-latency-value">—</span>
+          <span class="status-card-unit">ms</span>
+        </div>
+        <div class="status-card-sub">último ciclo</div>
+      </div>
+
+      <div class="status-card" id="card-db">
+        <div class="status-card-label">Eventos en DB</div>
+        <div class="status-card-value mono">
+          <span id="card-db-value">—</span>
+        </div>
+        <div class="status-card-bar">
+          <div class="status-card-bar-fill" id="card-db-bar"></div>
+        </div>
+      </div>
+
+      <div class="status-card" id="card-uptime">
+        <div class="status-card-label">Uptime</div>
+        <div class="status-card-value mono" id="card-uptime-value">—</div>
+        <div class="status-card-sub">desde el último arranque</div>
+      </div>
+
+      <div class="status-card" id="card-today">
+        <div class="status-card-label">Eventos hoy</div>
+        <div class="status-card-value mono" id="card-today-value">—</div>
+        <div class="status-card-sub">desde las 00:00</div>
+      </div>
+
+      <div class="status-card" id="card-last">
+        <div class="status-card-label">Última actividad</div>
+        <div class="status-card-value" id="card-last-value">—</div>
+        <div class="status-card-sub" id="card-last-sub">—</div>
+      </div>
+    </div>
+
+    <div class="sparkline-wrap">
+      <div class="sparkline-header">
+        <span>Latencia Modbus — últimos <span id="sparkline-count">0</span> ciclos</span>
+        <span class="sparkline-stats">
+          <span class="spark-stat">mín <span id="spark-min">—</span></span>
+          <span class="spark-stat">prom <span id="spark-avg">—</span></span>
+          <span class="spark-stat">máx <span id="spark-max">—</span></span>
+        </span>
+      </div>
+      <svg id="sparkline" class="sparkline" viewBox="0 0 600 80" preserveAspectRatio="none"></svg>
+    </div>
+  </section>
+
   <!-- Eventos del sistema -->
   <section class="sys-section">
     <h3 class="sys-section-title">Eventos del sistema</h3>

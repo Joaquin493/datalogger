@@ -168,6 +168,8 @@ async function pollStatus() {
       el.classList.add('connecting');
       el.textContent = '◌ CONECTANDO...';
     }
+    // El dashboard de Sistema se actualiza con los mismos datos.
+    renderSystemDashboard(data);
   } catch (e) {
     const el = $('plc-status');
     el.classList.remove('connected', 'connecting');
@@ -175,6 +177,154 @@ async function pollStatus() {
     el.textContent = '✕ SIN CONEXIÓN';
     el.title = e.message || 'network';
   }
+}
+
+// ---------- dashboard de Sistema ----------
+function fmtDuration(seconds) {
+  if (seconds == null || seconds < 0) return '—';
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function fmtRelative(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (isNaN(d)) return null;
+  const diff = Math.floor((Date.now() - d.getTime()) / 1000);
+  if (diff < 0) return 'recién';
+  if (diff < 5) return 'recién';
+  if (diff < 60) return `hace ${diff}s`;
+  if (diff < 3600) return `hace ${Math.floor(diff / 60)}m`;
+  if (diff < 86400) return `hace ${Math.floor(diff / 3600)}h`;
+  return `hace ${Math.floor(diff / 86400)}d`;
+}
+
+function fmtNumber(n) {
+  if (n == null) return '—';
+  return n.toLocaleString('es-AR');
+}
+
+function latencyClass(ms) {
+  if (ms == null) return 'unknown';
+  if (ms < 100) return 'good';
+  if (ms < 500) return 'warn';
+  return 'bad';
+}
+
+function renderSystemDashboard(data) {
+  // Solo renderizamos si el panel Sistema está montado (los elementos existen).
+  if (!$('card-plc')) return;
+
+  // Estado PLC
+  const plcDot = $('card-plc-dot');
+  const plcState = $('card-plc-state');
+  const plcSub = $('card-plc-sub');
+  plcDot.className = 'status-dot';
+  if (data.link.connected) {
+    plcDot.classList.add('on');
+    plcState.textContent = 'Conectado';
+    plcState.className = 'good';
+    plcSub.textContent = data.link.last_connected ? `desde ${data.link.last_connected}` : '—';
+  } else if (data.link.last_error) {
+    plcDot.classList.add('off');
+    plcState.textContent = 'Desconectado';
+    plcState.className = 'bad';
+    plcSub.textContent = String(data.link.last_error).slice(0, 80);
+    plcSub.title = data.link.last_error;
+  } else {
+    plcDot.classList.add('connecting');
+    plcState.textContent = 'Conectando...';
+    plcState.className = 'warn';
+    plcSub.textContent = 'esperando enlace';
+  }
+
+  // Latencia
+  const ms = data.link.last_cycle_ms;
+  const latVal = $('card-latency-value');
+  latVal.textContent = ms != null ? Math.round(ms) : '—';
+  latVal.className = latencyClass(ms);
+
+  // Eventos en DB con barra de progreso
+  $('card-db-value').textContent =
+    `${fmtNumber(data.events_total)} / ${fmtNumber(data.max_events)}`;
+  const pct = data.max_events ? Math.min(100, (data.events_total / data.max_events) * 100) : 0;
+  $('card-db-bar').style.width = pct.toFixed(2) + '%';
+  $('card-db-bar').className =
+    'status-card-bar-fill ' + (pct > 90 ? 'bad' : pct > 70 ? 'warn' : 'good');
+
+  // Uptime
+  $('card-uptime-value').textContent = fmtDuration(data.uptime_seconds);
+
+  // Eventos hoy
+  $('card-today-value').textContent = fmtNumber(data.events_today);
+
+  // Última actividad
+  const lastRel = fmtRelative(data.last_event_ts);
+  $('card-last-value').textContent = lastRel || '—';
+  $('card-last-sub').textContent = data.last_event_ts
+    ? fmtDateTime(data.last_event_ts)
+    : 'sin eventos aún';
+
+  // Sparkline
+  renderSparkline(data.latency_history || []);
+}
+
+function renderSparkline(values) {
+  const svg = $('sparkline');
+  if (!svg) return;
+  const W = 600, H = 80, PAD = 4;
+  $('sparkline-count').textContent = values.length;
+  if (!values.length) {
+    svg.innerHTML = '';
+    $('spark-min').textContent = '—';
+    $('spark-avg').textContent = '—';
+    $('spark-max').textContent = '—';
+    return;
+  }
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const avg = values.reduce((a, b) => a + b, 0) / values.length;
+  $('spark-min').textContent = Math.round(min) + 'ms';
+  $('spark-avg').textContent = Math.round(avg) + 'ms';
+  $('spark-max').textContent = Math.round(max) + 'ms';
+
+  // Escala vertical: usamos un techo mínimo de 200 para que cambios chicos no
+  // hagan vibrar visualmente todo el gráfico — solo se reescala si supera 200.
+  const yMax = Math.max(200, max * 1.1);
+  const yMin = 0;
+  const scaleY = (v) => H - PAD - ((v - yMin) / (yMax - yMin)) * (H - PAD * 2);
+  const stepX = (W - PAD * 2) / Math.max(1, values.length - 1);
+
+  // Path de la línea + area de relleno debajo.
+  let line = '';
+  let area = '';
+  values.forEach((v, i) => {
+    const x = PAD + i * stepX;
+    const y = scaleY(v);
+    line += (i === 0 ? 'M' : 'L') + x.toFixed(1) + ',' + y.toFixed(1);
+  });
+  area = line + ` L${(PAD + (values.length - 1) * stepX).toFixed(1)},${H - PAD} L${PAD},${H - PAD} Z`;
+
+  // Punto en el último valor.
+  const lastX = PAD + (values.length - 1) * stepX;
+  const lastY = scaleY(values[values.length - 1]);
+  const lastCls = latencyClass(values[values.length - 1]);
+
+  svg.innerHTML = `
+    <defs>
+      <linearGradient id="spark-grad" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.35"/>
+        <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+    <path d="${area}" fill="url(#spark-grad)"/>
+    <path d="${line}" fill="none" stroke="var(--accent)" stroke-width="1.5"/>
+    <circle cx="${lastX.toFixed(1)}" cy="${lastY.toFixed(1)}" r="3" class="spark-dot ${lastCls}"/>
+  `;
 }
 
 // ---------- signals (render incremental + flash) ----------

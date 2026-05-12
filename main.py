@@ -39,7 +39,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from modbus_logger import (
+    LATENCY_HISTORY,
     MAX_EVENTS,
+    PROCESS_START,
     connection_status,
     fetch_overrides,
     load_tags_safe,
@@ -281,16 +283,30 @@ def api_status():
     conn = _db_connect()
     try:
         total = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        # Eventos de hoy desde 00:00 local — usa el índice de timestamp.
+        today_floor = datetime.now().strftime("%Y-%m-%d 00:00:00.000")
+        events_today = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE timestamp >= ?",
+            (today_floor,),
+        ).fetchone()[0]
+        # MAX(timestamp) — O(1) con índice. Es el ts del último cambio detectado.
+        last_event_ts = conn.execute("SELECT MAX(timestamp) FROM events").fetchone()[0]
     finally:
         conn.close()
+
     return {
         "link": {
-            "connected":     connection_status["connected"],
-            "last_error":    connection_status["last_error"],
-            "last_cycle_ms": connection_status["last_cycle_ms"],
+            "connected":      connection_status["connected"],
+            "last_connected": connection_status["last_connected"],
+            "last_error":     connection_status["last_error"],
+            "last_cycle_ms":  connection_status["last_cycle_ms"],
         },
-        "events_total": total,
-        "max_events":   MAX_EVENTS,
+        "events_total":    total,
+        "max_events":      MAX_EVENTS,
+        "events_today":    events_today,
+        "last_event_ts":   _db_ts_to_iso(last_event_ts),
+        "uptime_seconds":  int(time.time() - PROCESS_START),
+        "latency_history": list(LATENCY_HISTORY),
     }
 
 
