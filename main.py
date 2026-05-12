@@ -1261,20 +1261,24 @@ def api_admin_history(limit: int = Query(30, ge=1, le=200)):
         if len(parts) != 5:
             continue
         full_sha, short_sha, date, author, subject = parts
+        # Filtramos en el backend: solo devolvemos commits a los que se puede
+        # rollback. Los anteriores al piso quedarían atrapando al operador
+        # sin UI de update, no tiene sentido mostrarlos.
+        if not _is_rollback_allowed(full_sha):
+            continue
         items.append({
-            "sha":               short_sha,
-            "full_sha":          full_sha,
-            "date":              date,
-            "author":            author,
-            "subject":           subject,
-            "is_current":        full_sha == current_sha,
-            "rollback_allowed":  _is_rollback_allowed(full_sha),
+            "sha":         short_sha,
+            "full_sha":    full_sha,
+            "date":        date,
+            "author":      author,
+            "subject":     subject,
+            "is_current":  full_sha == current_sha,
         })
 
     return {
-        "current_sha":      current_sha[:7] if current_sha else None,
-        "floor_sha":        _ROLLBACK_FLOOR_SHA[:7],
-        "items":            items,
+        "current_sha": current_sha[:7] if current_sha else None,
+        "floor_sha":   _ROLLBACK_FLOOR_SHA[:7],
+        "items":       items,
     }
 
 

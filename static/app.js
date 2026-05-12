@@ -1035,24 +1035,16 @@ async function loadHistory() {
     }
     $('history-empty').hidden = true;
     tb.innerHTML = data.items.map((c) => {
-      const classes = [];
-      if (c.is_current) classes.push('history-current');
-      if (!c.rollback_allowed) classes.push('history-blocked');
-      let action;
-      if (c.is_current) {
-        action = '<span class="hint-inline">actual</span>';
-      } else if (!c.rollback_allowed) {
-        action = '<span class="hint-inline" title="No se puede volver acá: es anterior a la feature de auto-update, dejaría al sistema sin manera de actualizarse desde la UI.">bloqueado</span>';
-      } else {
-        action = `<button type="button" class="btn btn-small" data-rollback-sha="${esc(c.sha)}" data-rollback-subject="${esc(c.subject)}">Ir a esta versión</button>`;
-      }
+      const action = c.is_current
+        ? '<span class="hint-inline">actual</span>'
+        : `<button type="button" class="btn btn-small" data-rollback-sha="${esc(c.sha)}" data-rollback-subject="${esc(c.subject)}">Ir a esta versión</button>`;
       return `
-      <tr class="${classes.join(' ')}">
-        <td class="mono">${esc(c.sha)}${c.is_current ? ' <span class="ov-badge" title="Versión actual">●</span>' : ''}</td>
-        <td class="ts">${esc(fmtDateTime(c.date.replace(' ', 'T')))}</td>
-        <td>${esc(c.author)}</td>
-        <td>${esc(c.subject)}</td>
-        <td class="row-actions">${action}</td>
+      <tr class="${c.is_current ? 'history-current' : ''}">
+        <td class="mono col-sha">${esc(c.sha)}${c.is_current ? ' <span class="ov-badge" title="Versión actual">●</span>' : ''}</td>
+        <td class="ts col-date">${esc(fmtDateTime(c.date.replace(' ', 'T')))}</td>
+        <td class="col-author">${esc(c.author)}</td>
+        <td class="col-subject">${esc(c.subject)}</td>
+        <td class="col-action">${action}</td>
       </tr>`;
     }).join('');
   } catch (e) {

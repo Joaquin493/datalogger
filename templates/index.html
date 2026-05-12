@@ -248,16 +248,16 @@
           Volver a una versión anterior aplica <code>git reset --hard</code> al commit elegido y reinicia.
           Si más adelante querés volver a la última, apretá <strong>Buscar actualizaciones</strong> y luego <strong>Actualizar</strong>.
         </div>
-        <div class="table-wrap" id="history-wrap">
+        <div class="table-wrap history-table" id="history-wrap">
           <div class="loading-overlay" id="history-loading" hidden><div class="spinner"></div></div>
           <table>
             <thead>
               <tr>
-                <th scope="col">SHA</th>
-                <th scope="col">Fecha</th>
-                <th scope="col">Autor</th>
+                <th scope="col" class="col-sha">SHA</th>
+                <th scope="col" class="col-date">Fecha</th>
+                <th scope="col" class="col-author">Autor</th>
                 <th scope="col">Descripción</th>
-                <th scope="col"></th>
+                <th scope="col" class="col-action">Acción</th>
               </tr>
             </thead>
             <tbody id="history-body"></tbody>
