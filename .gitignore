@@ -33,6 +33,9 @@ dist/
 *.swp
 *.swo
 
+# Claude Code / agent local config — no se versiona, es por máquina.
+.claude/
+
 # Sistema operativo
 Thumbs.db
 .DS_Store

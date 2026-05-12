@@ -950,7 +950,10 @@ function renderVersionInfo(data) {
   statusEl.className = '';
 
   if (data.dirty) {
-    statusEl.textContent = '⚠ hay cambios locales sin commitear';
+    const files = (data.dirty_files || []).slice(0, 5).join(', ');
+    const more = (data.dirty_files && data.dirty_files.length > 5)
+      ? ` (+${data.dirty_files.length - 5} más)` : '';
+    statusEl.textContent = `⚠ cambios locales sin commitear: ${files}${more}`;
     statusEl.className = 'warn';
     $('btn-apply-update').hidden = true;
     return;

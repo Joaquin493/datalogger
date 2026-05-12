@@ -1061,7 +1061,11 @@ def api_admin_version():
     branch = _git_safe("rev-parse", "--abbrev-ref", "HEAD")
 
     # ¿Hay cambios locales sin commitear en archivos trackeados?
-    dirty = bool(_git_safe("status", "--porcelain", "--untracked-files=no"))
+    dirty_raw = _git_safe("status", "--porcelain", "--untracked-files=no") or ""
+    dirty_files = [
+        line[3:].strip() for line in dirty_raw.splitlines() if line.strip()
+    ]
+    dirty = bool(dirty_files)
 
     behind = 0
     pending = []
@@ -1092,6 +1096,7 @@ def api_admin_version():
         "pending":       pending,
         "deps_changed":  deps_changed,
         "dirty":         dirty,
+        "dirty_files":   dirty_files,
         "fetch_error":   fetch_error,
     }
 
