@@ -139,7 +139,7 @@ function switchTab(name) {
   // Carga datos sólo al entrar al panel, y reconfigura el polling.
   if (name === 'events')    loadEvents();
   if (name === 'counts')    loadCounts();
-  if (name === 'sysevents') { loadSysEvents(); loadTags(); }
+  if (name === 'sysevents') { loadSysEvents(); loadTags(); loadVersionInfo(); }
   reconfigureTimers();
 }
 
@@ -924,6 +924,138 @@ async function rollbackTo(name) {
 function openModal(id)  { $(id).hidden = false; }
 function closeModal(id) { $(id).hidden = true; }
 
+// ---------- update del software desde GitHub ----------
+const updateState = { lastInfo: null };
+
+async function loadVersionInfo() {
+  $('upd-status').textContent = 'consultando…';
+  $('btn-apply-update').hidden = true;
+  $('upd-pending').hidden = true;
+  try {
+    const { data } = await api('/api/admin/version');
+    updateState.lastInfo = data;
+    renderVersionInfo(data);
+  } catch (e) {
+    $('upd-status').textContent = 'error: ' + (e.message || 'fetch');
+    $('upd-status').className = 'bad';
+  }
+}
+
+function renderVersionInfo(data) {
+  $('upd-current').textContent = data.current ? data.current.sha : '—';
+  $('upd-current-date').textContent = data.current ? fmtDateTime(data.current.date.replace(' ', 'T')) : '—';
+  $('upd-branch').textContent = data.branch || '—';
+
+  const statusEl = $('upd-status');
+  statusEl.className = '';
+
+  if (data.dirty) {
+    statusEl.textContent = '⚠ hay cambios locales sin commitear';
+    statusEl.className = 'warn';
+    $('btn-apply-update').hidden = true;
+    return;
+  }
+  if (data.fetch_error) {
+    statusEl.textContent = '✕ no se pudo contactar GitHub: ' + data.fetch_error;
+    statusEl.className = 'bad';
+    $('btn-apply-update').hidden = true;
+    return;
+  }
+  if (data.behind === 0) {
+    statusEl.textContent = '✓ al día';
+    statusEl.className = 'ok';
+    $('btn-apply-update').hidden = true;
+    return;
+  }
+  statusEl.textContent = `${data.behind} commit(s) atrás`;
+  statusEl.className = 'warn';
+  $('upd-pending-count').textContent = data.behind;
+  $('upd-deps-warn').hidden = !data.deps_changed;
+  $('upd-pending-list').innerHTML = data.pending.map((c) => `
+    <li>
+      <span class="mono">${esc(c.sha)}</span>
+      <span class="upd-date">${esc(fmtDateTime(c.date.replace(' ', 'T')))}</span>
+      <span class="upd-subject">${esc(c.subject)}</span>
+    </li>
+  `).join('');
+  $('upd-pending').hidden = false;
+  $('btn-apply-update').hidden = false;
+}
+
+function showUpdMsg(text, kind = 'info') {
+  const el = $('upd-msg');
+  el.textContent = text;
+  el.className = 'sys-msg ' + kind;
+  el.hidden = false;
+}
+
+async function applyUpdate() {
+  const info = updateState.lastInfo;
+  if (!info || info.behind === 0) return;
+  const msg = info.deps_changed
+    ? `Aplicar ${info.behind} commit(s) y correr pip install? La app se reinicia sola.`
+    : `Aplicar ${info.behind} commit(s) y reiniciar?`;
+  if (!confirm(msg)) return;
+
+  $('btn-apply-update').disabled = true;
+  $('btn-check-updates').disabled = true;
+  showUpdMsg('Aplicando pull...', 'info');
+
+  try {
+    const r = await apiMutate('/api/admin/update', { method: 'POST' });
+    if (!r.updated) {
+      showUpdMsg(r.message || 'Ya estaba al día.', 'ok');
+      $('btn-apply-update').disabled = false;
+      $('btn-check-updates').disabled = false;
+      return;
+    }
+    // El servidor va a reiniciarse en ~1.5s. Mostramos el modal y polleamos healthz.
+    openModal('modal-update-progress');
+    await waitForServerBack(r.old_sha, r.new_sha);
+  } catch (e) {
+    showUpdMsg('Error: ' + e.message, 'error');
+    $('btn-apply-update').disabled = false;
+    $('btn-check-updates').disabled = false;
+  }
+}
+
+// Polling de /healthz hasta que vuelva, máximo 60s. Tras volver,
+// recarga version info para confirmar que el SHA cambió.
+async function waitForServerBack(oldSha, newSha) {
+  const detail = $('upd-progress-detail');
+  const start = Date.now();
+  const TIMEOUT_MS = 60_000;
+  // Damos 2s de gracia antes del primer ping (la app necesita morir).
+  await new Promise((r) => setTimeout(r, 2000));
+  while (Date.now() - start < TIMEOUT_MS) {
+    try {
+      const r = await fetch('/healthz', { cache: 'no-store' });
+      if (r.ok) {
+        detail.textContent = 'Servidor respondiendo. Verificando versión…';
+        break;
+      }
+    } catch (_) { /* aún no */ }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  // Hacemos un loadVersionInfo para refrescar.
+  try {
+    const { data } = await api('/api/admin/version');
+    closeModal('modal-update-progress');
+    if (data.current && data.current.sha === newSha.slice(0, data.current.sha.length)) {
+      showUpdMsg(`Actualizado a ${data.current.sha} — "${data.current.subject}"`, 'ok');
+    } else {
+      showUpdMsg('Servidor reiniciado, pero la versión no coincide con lo esperado. Revisar logs.', 'error');
+    }
+    updateState.lastInfo = data;
+    renderVersionInfo(data);
+  } catch (e) {
+    closeModal('modal-update-progress');
+    showUpdMsg('No se pudo confirmar la nueva versión: ' + e.message, 'error');
+  }
+  $('btn-apply-update').disabled = false;
+  $('btn-check-updates').disabled = false;
+}
+
 // ---------- tema claro/oscuro ----------
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
@@ -1131,6 +1263,10 @@ function wireEvents() {
   $('modal-preview').addEventListener('click', (e) => {
     if (e.target.matches('[data-close]')) cancelPreviewUpload();
   });
+
+  // Update del software
+  $('btn-check-updates').addEventListener('click', loadVersionInfo);
+  $('btn-apply-update').addEventListener('click', applyUpdate);
 }
 
 function wireKeyboard() {

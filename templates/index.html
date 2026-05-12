@@ -217,6 +217,31 @@
     </div>
   </section>
 
+  <!-- Actualización del software -->
+  <section class="sys-section">
+    <h3 class="sys-section-title">Actualización del software</h3>
+    <div class="update-bar">
+      <div class="update-info">
+        <div><strong>Versión actual:</strong> <span id="upd-current" class="mono">—</span></div>
+        <div><strong>Fecha:</strong> <span id="upd-current-date">—</span></div>
+        <div><strong>Branch:</strong> <span id="upd-branch" class="mono">—</span></div>
+        <div id="upd-status-wrap"><strong>Estado:</strong> <span id="upd-status">—</span></div>
+      </div>
+      <div class="update-actions">
+        <button type="button" class="btn" id="btn-check-updates">↺ Buscar actualizaciones</button>
+        <button type="button" class="btn btn-primary" id="btn-apply-update" hidden>⚡ Actualizar y reiniciar</button>
+      </div>
+    </div>
+    <div id="upd-pending" class="update-pending" hidden>
+      <div class="update-pending-header">
+        <strong id="upd-pending-count">0</strong> commit(s) pendiente(s)
+        <span id="upd-deps-warn" class="upd-warn" hidden>· requirements.txt cambió → se va a correr pip install</span>
+      </div>
+      <ul id="upd-pending-list" class="update-pending-list"></ul>
+    </div>
+    <div id="upd-msg" class="sys-msg" hidden></div>
+  </section>
+
   <!-- Eventos del sistema -->
   <section class="sys-section">
     <h3 class="sys-section-title">Eventos del sistema</h3>
@@ -239,6 +264,17 @@
       <div id="sysev-empty" class="empty-state" hidden>Sin eventos del sistema</div>
     </div>
   </section>
+</div>
+
+<!-- Modal: progreso de update (reinicio en curso) -->
+<div id="modal-update-progress" class="modal" role="dialog" aria-modal="true" hidden>
+  <div class="modal-backdrop"></div>
+  <div class="modal-card">
+    <h3>Reiniciando…</h3>
+    <div class="modal-row" id="upd-progress-msg">Actualizando y reiniciando el servicio. Esto toma unos segundos.</div>
+    <div class="update-spinner"><div class="spinner"></div></div>
+    <div class="modal-hint" id="upd-progress-detail">Esperando que el servidor vuelva…</div>
+  </div>
 </div>
 
 <!-- Modal: editar tag -->

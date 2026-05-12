@@ -24,13 +24,16 @@ import re
 import secrets
 import shutil
 import sqlite3
+import subprocess
+import sys
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -982,3 +985,230 @@ def api_tags_download_backup(name: str):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=name,
     )
+
+
+# ---------------------------------------------------------------------------
+# ADMIN — auto-update desde GitHub (sin tocar la consola)
+# ---------------------------------------------------------------------------
+#
+# El truco: en lugar de pedirle a systemd que reinicie el servicio (que
+# requeriría configuración previa de sudoers), la app se reemplaza a sí
+# misma con os.execv() después de pullear. El proceso actual se transforma
+# en una invocación fresca de Python, que re-importa todo el código del
+# disco — incluyendo lo que acaba de bajar de git. Cero intervención manual.
+
+_REPO_DIR = Path(__file__).resolve().parent
+
+
+def _git(*args, check=True) -> subprocess.CompletedProcess:
+    """Corre git en el directorio del repo y devuelve el CompletedProcess."""
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(_REPO_DIR),
+        capture_output=True,
+        text=True,
+        check=check,
+        timeout=60,
+    )
+
+
+def _git_safe(*args) -> Optional[str]:
+    """Variante que devuelve stdout o None si falla. Para info no crítica."""
+    try:
+        return _git(*args).stdout.strip()
+    except Exception:
+        return None
+
+
+def _parse_commit_log(text: str) -> list[dict]:
+    """Parsea salida de `git log --format='%h|%ci|%s'`."""
+    out = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("|", 2)
+        if len(parts) != 3:
+            continue
+        out.append({"sha": parts[0], "date": parts[1], "subject": parts[2]})
+    return out
+
+
+@app.get("/api/admin/version", dependencies=[Depends(require_session)])
+def api_admin_version():
+    """Devuelve commit actual + commits pendientes en origin/main.
+
+    Hace `git fetch` para asegurar que origin/main esté actualizado. No
+    modifica nada de la working tree.
+    """
+    if not (_REPO_DIR / ".git").exists():
+        raise HTTPException(500, "El directorio del proyecto no es un repo git.")
+
+    # Fetch (puede fallar si no hay red — devolvemos info parcial en ese caso).
+    fetch_error = None
+    try:
+        _git("fetch", "--quiet", "origin", "main")
+    except Exception as e:
+        msg = str(e)
+        if hasattr(e, "stderr") and e.stderr:
+            msg = e.stderr.strip()
+        fetch_error = msg
+
+    current_log = _git_safe("log", "-1", "--format=%h|%ci|%s") or ""
+    current = _parse_commit_log(current_log)
+    current_info = current[0] if current else None
+
+    # Branch actual (para mostrar si no es main).
+    branch = _git_safe("rev-parse", "--abbrev-ref", "HEAD")
+
+    # ¿Hay cambios locales sin commitear en archivos trackeados?
+    dirty = bool(_git_safe("status", "--porcelain", "--untracked-files=no"))
+
+    behind = 0
+    pending = []
+    if not fetch_error:
+        # Commits que están en origin/main pero no acá (los que faltan aplicar).
+        try:
+            behind_str = _git("rev-list", "--count", "HEAD..origin/main").stdout.strip()
+            behind = int(behind_str or "0")
+        except Exception:
+            behind = 0
+        if behind > 0:
+            pending_log = _git_safe("log", "--format=%h|%ci|%s", "HEAD..origin/main") or ""
+            pending = _parse_commit_log(pending_log)
+
+    # Detectar si requirements.txt cambió entre HEAD y origin/main.
+    deps_changed = False
+    if behind > 0:
+        try:
+            diff_files = _git("diff", "--name-only", "HEAD..origin/main").stdout
+            deps_changed = "requirements.txt" in diff_files.splitlines()
+        except Exception:
+            pass
+
+    return {
+        "current":       current_info,
+        "branch":        branch,
+        "behind":        behind,
+        "pending":       pending,
+        "deps_changed":  deps_changed,
+        "dirty":         dirty,
+        "fetch_error":   fetch_error,
+    }
+
+
+def _restart_self_after_delay(delay_s: float = 1.5):
+    """Re-exec del proceso actual con los mismos argumentos. Lo invoca un
+    BackgroundTask para que primero termine la response HTTP."""
+    def _go():
+        time.sleep(delay_s)
+        print("[AUTO_UPDATE] Re-exec del proceso para tomar codigo nuevo...", flush=True)
+        # sys.orig_argv preserva los args exactos con que se invoco Python
+        # (incluyendo "-m uvicorn ..."). Disponible desde 3.10.
+        argv = getattr(sys, "orig_argv", None) or sys.argv
+        try:
+            os.execv(sys.executable, argv)
+        except Exception as e:
+            print(f"[AUTO_UPDATE] Re-exec fallo: {e}", flush=True)
+            # Si execv falla, salimos con 1 para que systemd nos levante
+            # (asumiendo Restart=on-failure o always).
+            os._exit(1)
+    threading.Thread(target=_go, daemon=True).start()
+
+
+@app.post("/api/admin/update", dependencies=[Depends(require_session)])
+def api_admin_update(background_tasks: BackgroundTasks):
+    """Pullea, instala deps si cambiaron, y se reinicia.
+
+    El restart es por os.execv — no requiere systemd ni sudoers. La response
+    se manda antes del restart; la UI debería polear /healthz para detectar
+    cuándo vuelve.
+    """
+    if not (_REPO_DIR / ".git").exists():
+        raise HTTPException(500, "El directorio del proyecto no es un repo git.")
+
+    # 1. Seguridad: no aplicar si hay cambios locales sin commitear.
+    if _git_safe("status", "--porcelain", "--untracked-files=no"):
+        raise HTTPException(409, "Hay cambios locales sin commitear. Resolver primero.")
+
+    # 2. Fetch + capturar SHA viejo.
+    try:
+        _git("fetch", "origin", "main")
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(502, f"git fetch fallo: {e.stderr.strip()}")
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "git fetch timeout (¿hay salida a internet?).")
+
+    old_sha = _git_safe("rev-parse", "HEAD") or "?"
+    remote_sha = _git_safe("rev-parse", "origin/main") or "?"
+    if old_sha == remote_sha:
+        return {"ok": True, "updated": False, "message": "Ya esta al dia.", "sha": old_sha}
+
+    # 3. Detectar si requirements cambió antes de pullear.
+    deps_changed = False
+    try:
+        diff_files = _git("diff", "--name-only", "HEAD..origin/main").stdout
+        deps_changed = "requirements.txt" in diff_files.splitlines()
+    except Exception:
+        pass
+
+    # 4. Pull (solo fast-forward — sin merges automáticos).
+    try:
+        pull_out = _git("pull", "--ff-only", "origin", "main")
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(409, f"git pull fallo (¿conflicto?): {e.stderr.strip() or e.stdout.strip()}")
+
+    new_sha = _git_safe("rev-parse", "HEAD") or "?"
+
+    # 5. pip install si requirements cambio.
+    pip_log = None
+    if deps_changed:
+        pip_args = [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"]
+        # Si NO estamos en venv, instalar en --user para no necesitar root.
+        if sys.prefix == sys.base_prefix:
+            pip_args.append("--user")
+        try:
+            pip_result = subprocess.run(
+                pip_args,
+                cwd=str(_REPO_DIR),
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=True,
+            )
+            pip_log = (pip_result.stdout[-2000:] + pip_result.stderr[-2000:]).strip()
+        except subprocess.CalledProcessError as e:
+            raise HTTPException(
+                500,
+                f"pip install fallo. El codigo se actualizo a {new_sha[:7]} pero las deps "
+                f"viejas siguen cargadas. Reiniciar manualmente despues de resolver. "
+                f"Error: {(e.stderr or e.stdout or '').strip()[-500:]}"
+            )
+
+    # 6. Guardar evento en system_events para auditoria.
+    try:
+        conn = _db_connect_unrowed()
+        try:
+            conn.execute(
+                "INSERT INTO system_events(event_type, description, timestamp) VALUES (?, ?, ?)",
+                ("AUTO_UPDATE",
+                 f"Pull {old_sha[:7]} -> {new_sha[:7]}"
+                 + (" + pip install" if deps_changed else ""),
+                 _now_ts()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+    # 7. Programar restart por re-exec (despues de mandar la response).
+    background_tasks.add_task(_restart_self_after_delay)
+
+    return {
+        "ok":            True,
+        "updated":       True,
+        "old_sha":       old_sha,
+        "new_sha":       new_sha,
+        "deps_changed":  deps_changed,
+        "restart_in_s":  1.5,
+    }
