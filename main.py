@@ -1022,6 +1022,27 @@ def _ensure_origin_remote():
         pass
 
 
+def _unshallow_if_needed():
+    """En hostings con shallow clone (Render, Railway), el repo solo tiene
+    el último commit. Sin historial no podemos chequear ancestros (rollback
+    floor) ni listar versiones. Detectamos y traemos todo el historial.
+    Operación one-shot — después de la primera vez el repo deja de ser shallow.
+    """
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            cwd=str(_REPO_DIR), capture_output=True, text=True, timeout=5,
+        )
+        if not (r.returncode == 0 and r.stdout.strip() == "true"):
+            return
+        subprocess.run(
+            ["git", "fetch", "--unshallow", "origin", "main"],
+            cwd=str(_REPO_DIR), capture_output=True, timeout=120,
+        )
+    except Exception:
+        pass
+
+
 # Piso de rollback: SHA del primer commit que incluye la feature de auto-update.
 # Volver a un commit anterior a este dejaría al operador sin acceso a la UI de
 # actualización, atrapándolo en una versión vieja sin posibilidad de volver
@@ -1087,6 +1108,10 @@ def api_admin_version():
 
     # Asegurar que existe el remote 'origin' (Render/Railway no lo preservan).
     _ensure_origin_remote()
+    # Si el repo es shallow (clone de 1 sola profundidad), traer todo el
+    # historial. Sin esto, el chequeo de ancestro contra el rollback floor
+    # falla porque el floor SHA no está en el repo local.
+    _unshallow_if_needed()
 
     # Fetch (puede fallar si no hay red — devolvemos info parcial en ese caso).
     fetch_error = None
@@ -1276,6 +1301,9 @@ def api_admin_history(limit: int = Query(30, ge=1, le=200)):
     """
     if not (_REPO_DIR / ".git").exists():
         raise HTTPException(500, "El directorio del proyecto no es un repo git.")
+
+    _ensure_origin_remote()
+    _unshallow_if_needed()
 
     current_sha = _git_safe("rev-parse", "HEAD") or ""
     # Usamos el SHA largo para comparar, pero mostramos el corto.
