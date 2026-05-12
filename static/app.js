@@ -45,8 +45,8 @@ const state = {
 const signalNodes = new Map();  // address -> { root, pill, desc, currentState }
 
 // Timers
-const timers = { status: null, signals: null, eventsTail: null };
-const debouncers = { sig: null, ev: null, cnt: null, tags: null };
+const timers = { status: null, signals: null, eventsTail: null, logs: null };
+const debouncers = { sig: null, ev: null, cnt: null, tags: null, log: null };
 
 // ---------- utilidades ----------
 const $ = (id) => document.getElementById(id);
@@ -1100,6 +1100,8 @@ function renderConfigGate() {
     // Cargar las secciones internas.
     loadTags();
     loadVersionInfo();
+    loadLogs();
+    reconfigureLogTimer();
   } else {
     gate.hidden = false;
     content.hidden = true;
@@ -1325,6 +1327,75 @@ async function waitForServerBack(oldSha, newSha) {
   $('btn-check-updates').disabled = false;
 }
 
+// ---------- log viewer del servidor ----------
+const logState = {
+  level: 'INFO',
+  lines: 200,
+  search: '',
+  autoRefresh: false,
+  lastBytes: 0,
+  stickToBottom: true,
+};
+
+async function loadLogs() {
+  setLoading('log-loading', true);
+  const params = qs({ lines: logState.lines, level: logState.level });
+  try {
+    const { data } = await api('/api/admin/logs?' + params);
+    renderLogs(data);
+  } catch (e) {
+    $('log-box').innerHTML = `<span class="log-line level-ERROR">Error: ${esc(e.message || 'fetch')}</span>`;
+    $('log-status').textContent = 'error';
+  } finally {
+    setLoading('log-loading', false);
+  }
+}
+
+function renderLogs(data) {
+  const box = $('log-box');
+  const status = $('log-status');
+  if (!data.exists) {
+    box.innerHTML = '<span class="log-line">El archivo logs/logger.log no existe todavía.</span>';
+    status.textContent = '—';
+    return;
+  }
+  const q = logState.search.toLowerCase();
+  const filtered = q
+    ? data.lines.filter((l) => (l.msg || '').toLowerCase().includes(q)
+        || (l.logger || '').toLowerCase().includes(q))
+    : data.lines;
+
+  // Detectamos si el usuario está leyendo "arriba" — en ese caso NO hacemos
+  // auto-scroll a fin de no robarle el lugar. Si está al final, sí.
+  const nearBottom = (box.scrollHeight - box.scrollTop - box.clientHeight) < 30;
+
+  box.innerHTML = filtered.map((l) => {
+    const cls = l.level ? `level-${l.level}` : 'level-cont';
+    if (l.level) {
+      const tsShort = (l.ts || '').slice(11, 23);  // HH:MM:SS.mmm
+      return `<span class="log-line ${cls}"><span class="log-ts">${esc(tsShort)}</span><span class="log-level">${esc(l.level)}</span><span class="log-logger">${esc((l.logger || '').replace('plc_logger.', ''))}</span><span class="log-msg">${esc(l.msg)}</span></span>`;
+    }
+    return `<span class="log-line ${cls}"><span class="log-cont">${esc(l.msg)}</span></span>`;
+  }).join('\n');
+
+  // KB del archivo + cantidad mostrada para info.
+  const kb = (data.size / 1024).toFixed(1);
+  const shown = filtered.length;
+  status.textContent = `${shown} líneas · ${kb} kB`;
+
+  if (nearBottom || logState.stickToBottom) {
+    box.scrollTop = box.scrollHeight;
+    logState.stickToBottom = true;
+  }
+}
+
+function reconfigureLogTimer() {
+  if (timers.logs) { clearInterval(timers.logs); timers.logs = null; }
+  if (logState.autoRefresh && state.currentTab === 'config' && configState.authenticated && !document.hidden) {
+    timers.logs = setInterval(loadLogs, 5000);
+  }
+}
+
 // ---------- tema claro/oscuro ----------
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme;
@@ -1417,6 +1488,8 @@ function reconfigureTimers() {
   if (state.ev.autoRefresh && state.currentTab === 'events') {
     timers.eventsTail = setInterval(tailTick, POLL_EVENTS_TAIL_MS);
   }
+  // logs auto-refresh: solo si estamos en config con auth válida y toggle ON.
+  reconfigureLogTimer();
   updateLiveIndicator();
 }
 
@@ -1549,6 +1622,37 @@ function wireEvents() {
   // Password gate de configuración
   $('config-gate-form').addEventListener('submit', submitConfigPassword);
   $('btn-config-lock').addEventListener('click', lockConfig);
+
+  // Log viewer
+  $('btn-log-refresh').addEventListener('click', loadLogs);
+  $('log-level').addEventListener('change', (e) => {
+    logState.level = e.target.value;
+    loadLogs();
+  });
+  $('log-lines').addEventListener('change', (e) => {
+    logState.lines = parseInt(e.target.value, 10) || 200;
+    loadLogs();
+  });
+  $('log-search').addEventListener('input', () => {
+    clearTimeout(debouncers.log);
+    debouncers.log = setTimeout(() => {
+      logState.search = $('log-search').value.trim();
+      // El search es client-side — no hace nueva llamada, solo re-renderiza
+      // con el último dataset cacheado. Como no cacheamos, llamamos a la API
+      // (es barato).
+      loadLogs();
+    }, SEARCH_DEBOUNCE_MS);
+  });
+  $('log-auto').addEventListener('change', (e) => {
+    logState.autoRefresh = e.target.checked;
+    reconfigureLogTimer();
+  });
+  // Si el usuario hace scroll arriba, dejamos de pegar al fondo en cada refresh.
+  $('log-box').addEventListener('scroll', () => {
+    const box = $('log-box');
+    const nearBottom = (box.scrollHeight - box.scrollTop - box.clientHeight) < 30;
+    logState.stickToBottom = nearBottom;
+  });
 }
 
 function wireKeyboard() {

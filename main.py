@@ -1398,6 +1398,83 @@ def api_admin_history(limit: int = Query(30, ge=1, le=200)):
     }
 
 
+# Parser para las líneas del log. Formato emitido por modbus_logger:
+#   2026-05-12 14:30:15.123 | INFO     | plc_logger.main | mensaje
+_LOG_LINE_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})"
+    r"\s\|\s(\w+)\s*\|\s([^|]+)\s\|\s(.*)$"
+)
+
+_LOG_PATH = _REPO_DIR / "logs" / "logger.log"
+
+
+@app.get("/api/admin/logs", dependencies=[Depends(require_config_session)])
+def api_admin_logs(
+    lines: int = Query(200, ge=10, le=2000),
+    level: str = Query("all"),
+):
+    """Devuelve las últimas N líneas del log de la app.
+
+    Lee solo el archivo activo (logger.log). Los rotados (.1, .2, ...) no se
+    incluyen — sirven para tail-f, no para histórico profundo. Cada línea se
+    parsea para extraer timestamp/nivel/logger/mensaje. Las que no matchean
+    (continuaciones de traceback, etc.) van con level=None y se renderizan
+    visualmente como continuación de la línea anterior.
+    """
+    if not _LOG_PATH.exists():
+        return {"lines": [], "file": str(_LOG_PATH), "exists": False, "size": 0}
+
+    # Leemos solo los últimos ~lines*500 bytes para no traer el archivo entero
+    # (logger.log llega hasta 1MB antes de rotar).
+    with open(_LOG_PATH, "rb") as f:
+        f.seek(0, 2)
+        size = f.tell()
+        read_size = min(size, max(lines * 500, 16384))
+        f.seek(max(0, size - read_size))
+        data = f.read().decode("utf-8", errors="replace")
+
+    # Si tomamos del medio de una línea, descartamos esa primera parcial.
+    raw_lines = data.splitlines()
+    if size > read_size and raw_lines:
+        raw_lines = raw_lines[1:]
+
+    raw_lines = raw_lines[-lines:]
+
+    parsed = []
+    for raw in raw_lines:
+        m = _LOG_LINE_RE.match(raw)
+        if m:
+            parsed.append({
+                "ts":     m.group(1),
+                "level":  m.group(2).strip(),
+                "logger": m.group(3).strip(),
+                "msg":    m.group(4),
+            })
+        else:
+            # Continuación de una línea (típico en tracebacks).
+            parsed.append({"ts": None, "level": None, "logger": None, "msg": raw})
+
+    # Filtro de nivel.
+    LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
+    if level.upper() in LEVEL_ORDER:
+        floor = LEVEL_ORDER[level.upper()]
+        # Mantenemos continuaciones (level=None) si la línea anterior fue mostrada.
+        keep = []
+        last_shown = False
+        for line in parsed:
+            if line["level"] is None:
+                if last_shown:
+                    keep.append(line)
+            elif LEVEL_ORDER.get(line["level"], 0) >= floor:
+                keep.append(line)
+                last_shown = True
+            else:
+                last_shown = False
+        parsed = keep
+
+    return {"lines": parsed, "file": str(_LOG_PATH), "exists": True, "size": size}
+
+
 @app.post("/api/admin/rollback", dependencies=[Depends(require_config_session)])
 async def api_admin_rollback(request: Request, background_tasks: BackgroundTasks):
     """Hace `git reset --hard <sha>` para volver a un commit anterior.

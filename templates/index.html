@@ -381,6 +381,45 @@
         </div>
       </details>
     </section>
+
+    <!-- Logs del servidor -->
+    <section class="sys-section">
+      <h3 class="sys-section-title">Logs del servidor</h3>
+      <div class="toolbar log-toolbar">
+        <label class="filter-inline">
+          Nivel
+          <select id="log-level">
+            <option value="all">Todos</option>
+            <option value="DEBUG">DEBUG+</option>
+            <option value="INFO" selected>INFO+</option>
+            <option value="WARNING">WARNING+</option>
+            <option value="ERROR">ERROR+</option>
+          </select>
+        </label>
+        <label class="filter-inline">
+          Líneas
+          <select id="log-lines">
+            <option value="100">100</option>
+            <option value="200" selected>200</option>
+            <option value="500">500</option>
+            <option value="1000">1000</option>
+            <option value="2000">2000</option>
+          </select>
+        </label>
+        <div class="search-box">
+          <span class="search-icon" aria-hidden="true">⌕</span>
+          <input type="text" id="log-search" placeholder="Filtrar texto..." aria-label="Filtrar logs">
+        </div>
+        <label class="filter-inline"><input type="checkbox" id="log-auto"> auto-refresh (5s)</label>
+        <div class="spacer"></div>
+        <span class="log-status" id="log-status">—</span>
+        <button type="button" class="btn" id="btn-log-refresh">↺ Refrescar</button>
+      </div>
+      <div class="log-box-wrap">
+        <div class="loading-overlay" id="log-loading" hidden><div class="spinner"></div></div>
+        <pre id="log-box" class="log-box" aria-live="polite"></pre>
+      </div>
+    </section>
   </div>
 </div>
 

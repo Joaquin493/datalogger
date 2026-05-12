@@ -1245,6 +1245,87 @@ tr.history-current td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .spark-dot.bad  { fill: var(--bad); }
 .spark-dot.unknown { fill: var(--text3); }
 
+/* ====================  Log viewer  ==================== */
+.log-toolbar { flex-wrap: wrap; gap: 10px; }
+.log-toolbar select {
+  padding: 4px 6px;
+  border: 1px solid var(--border2);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--ui);
+  font-size: 12px;
+}
+.log-toolbar .filter-inline { gap: 4px; }
+.log-status {
+  font-size: 11px;
+  color: var(--text3);
+  font-family: var(--mono);
+}
+
+.log-box-wrap {
+  position: relative;
+}
+.log-box {
+  background: #0a0e15;
+  color: #cdd6e1;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  padding: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  height: 420px;
+  overflow: auto;
+  white-space: pre;
+  margin: 0;
+}
+[data-theme="dark"] .log-box {
+  background: #060a11;
+  border-color: #2a3749;
+}
+
+.log-line {
+  display: block;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.log-line .log-ts {
+  display: inline-block;
+  color: #6b7994;
+  margin-right: 8px;
+}
+.log-line .log-level {
+  display: inline-block;
+  width: 64px;
+  font-weight: 700;
+  margin-right: 6px;
+}
+.log-line .log-logger {
+  display: inline-block;
+  color: #7aa9d9;
+  margin-right: 8px;
+}
+.log-line .log-msg { color: inherit; }
+.log-line .log-cont {
+  display: inline-block;
+  padding-left: 80px;
+  color: #ff9aa3;
+  font-style: italic;
+}
+
+.log-line.level-DEBUG    { color: #6b7994; }
+.log-line.level-DEBUG .log-level    { color: #6b7994; }
+.log-line.level-INFO     { color: #cdd6e1; }
+.log-line.level-INFO .log-level     { color: #7fc8ff; }
+.log-line.level-WARNING  { color: #ffd17a; }
+.log-line.level-WARNING .log-level  { color: #ffb648; }
+.log-line.level-ERROR    { color: #ff8a92; }
+.log-line.level-ERROR .log-level    { color: #ff5a6a; }
+.log-line.level-CRITICAL { color: #ff5a6a; font-weight: 700; }
+.log-line.level-CRITICAL .log-level { color: #ff5a6a; }
+.log-line.level-cont     { color: #ff9aa3; }
+
 /* Anchos definidos y vertical-align centrado para que el botón y el texto
    queden alineados aunque la descripción ocupe varias líneas. */
 .history-table table { table-layout: fixed; width: 100%; }
