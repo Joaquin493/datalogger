@@ -1080,10 +1080,9 @@ tr.history-current td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
    queden alineados aunque la descripción ocupe varias líneas. */
 .history-table table { table-layout: fixed; width: 100%; }
 .history-table th, .history-table td { vertical-align: middle; }
-.history-table .col-sha     { width: 90px; }
-.history-table .col-date    { width: 150px; }
-.history-table .col-author  { width: 130px; }
-.history-table .col-action  { width: 150px; text-align: right; }
+.history-table .col-sha     { width: 100px; }
+.history-table .col-date    { width: 170px; }
+.history-table .col-action  { width: 160px; text-align: right; }
 .history-table .col-subject { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .history-table .col-subject:hover { white-space: normal; }
 .history-table .col-action .btn-small { white-space: nowrap; }

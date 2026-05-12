@@ -1042,7 +1042,6 @@ async function loadHistory() {
       <tr class="${c.is_current ? 'history-current' : ''}">
         <td class="mono col-sha">${esc(c.sha)}${c.is_current ? ' <span class="ov-badge" title="Versión actual">●</span>' : ''}</td>
         <td class="ts col-date">${esc(fmtDateTime(c.date.replace(' ', 'T')))}</td>
-        <td class="col-author">${esc(c.author)}</td>
         <td class="col-subject">${esc(c.subject)}</td>
         <td class="col-action">${action}</td>
       </tr>`;
