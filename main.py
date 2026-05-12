@@ -999,6 +999,25 @@ def api_tags_download_backup(name: str):
 
 _REPO_DIR = Path(__file__).resolve().parent
 
+# Piso de rollback: SHA del primer commit que incluye la feature de auto-update.
+# Volver a un commit anterior a este dejaría al operador sin acceso a la UI de
+# actualización, atrapándolo en una versión vieja sin posibilidad de volver
+# salvo SSH. El gate aplica a /api/admin/rollback y se refleja en el historial.
+_ROLLBACK_FLOOR_SHA = "c140d347824f71e217957565b1b481295f7ace4b"
+
+
+def _is_rollback_allowed(target_full_sha: str) -> bool:
+    """True si target tiene el piso como ancestro (o ES el piso)."""
+    try:
+        r = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", _ROLLBACK_FLOOR_SHA, target_full_sha],
+            cwd=str(_REPO_DIR), capture_output=True, timeout=10,
+        )
+        return r.returncode == 0
+    except Exception:
+        # Si falla el chequeo, ser conservadores y NO permitir.
+        return False
+
 
 def _git(*args, check=True) -> subprocess.CompletedProcess:
     """Corre git en el directorio del repo y devuelve el CompletedProcess."""
@@ -1243,15 +1262,20 @@ def api_admin_history(limit: int = Query(30, ge=1, le=200)):
             continue
         full_sha, short_sha, date, author, subject = parts
         items.append({
-            "sha":        short_sha,
-            "full_sha":   full_sha,
-            "date":       date,
-            "author":     author,
-            "subject":    subject,
-            "is_current": full_sha == current_sha,
+            "sha":               short_sha,
+            "full_sha":          full_sha,
+            "date":              date,
+            "author":            author,
+            "subject":           subject,
+            "is_current":        full_sha == current_sha,
+            "rollback_allowed":  _is_rollback_allowed(full_sha),
         })
 
-    return {"current_sha": current_sha[:7] if current_sha else None, "items": items}
+    return {
+        "current_sha":      current_sha[:7] if current_sha else None,
+        "floor_sha":        _ROLLBACK_FLOOR_SHA[:7],
+        "items":            items,
+    }
 
 
 @app.post("/api/admin/rollback", dependencies=[Depends(require_session)])
@@ -1287,6 +1311,17 @@ async def api_admin_rollback(request: Request, background_tasks: BackgroundTasks
     )
     if check.returncode != 0:
         raise HTTPException(400, "El SHA no está en el historial de origin/main.")
+
+    # Gate: no permitir rollback a commits anteriores a la introducción de
+    # la feature de auto-update. Si volviéramos antes de eso, perderíamos
+    # la UI para volver hacia adelante, dejando al operador atrapado.
+    if not _is_rollback_allowed(full_sha):
+        raise HTTPException(
+            400,
+            f"No se puede volver a esa versión: es anterior a la feature de "
+            f"actualización ({_ROLLBACK_FLOOR_SHA[:7]}). Volver allí dejaría "
+            f"al sistema sin manera de actualizarse desde la UI."
+        )
 
     old_sha = _git_safe("rev-parse", "HEAD") or "?"
     if old_sha == full_sha:

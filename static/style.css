@@ -1075,3 +1075,6 @@ tr.tag-overridden td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 
 tr.history-current td { background: rgba(0,149,208,.06); font-weight: 600; }
 tr.history-current td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+
+tr.history-blocked td { color: var(--text3); opacity: 0.6; }
+tr.history-blocked .hint-inline { cursor: help; }
