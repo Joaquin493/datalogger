@@ -1481,17 +1481,29 @@ def api_admin_logs(
         LEVEL_ORDER = {"DEBUG": 0, "INFO": 1, "EVENT": 1, "WARNING": 2, "ERROR": 3, "CRITICAL": 4}
         if level_up in LEVEL_ORDER:
             floor = LEVEL_ORDER[level_up]
+            # En INFO+ los mensajes INFO/EVENT solo pasan si vienen del logger
+            # 'main' — para que la vista quede limpia y no se llene con los
+            # mensajes ruteros de DB (checkpoints, FIFO) o modbus. Las
+            # WARNING+ siguen viniendo de cualquier logger.
+            restrict_info_to_main = (level_up == "INFO")
             keep = []
             last_shown = False
             for line in parsed:
                 if line["level"] is None:
                     if last_shown:
                         keep.append(line)
-                elif LEVEL_ORDER.get(line["level"], 0) >= floor:
-                    keep.append(line)
-                    last_shown = True
-                else:
+                    continue
+                line_floor = LEVEL_ORDER.get(line["level"], 0)
+                if line_floor < floor:
                     last_shown = False
+                    continue
+                if (restrict_info_to_main
+                        and line["level"] in ("INFO", "EVENT")
+                        and not (line["logger"] or "").endswith("main")):
+                    last_shown = False
+                    continue
+                keep.append(line)
+                last_shown = True
             parsed = keep
 
     return {"lines": parsed, "file": str(_LOG_PATH), "exists": True, "size": size}
