@@ -999,6 +999,29 @@ def api_tags_download_backup(name: str):
 
 _REPO_DIR = Path(__file__).resolve().parent
 
+# URL del repo remoto. Algunos hostings (Render, Railway) hacen un clone que
+# no preserva el remote 'origin', así que lo configuramos lazy si falta.
+_REPO_URL = os.environ.get("REPO_URL", "https://github.com/Joaquin493/datalogger.git")
+
+
+def _ensure_origin_remote():
+    """Si no existe el remote 'origin', lo agrega apuntando a _REPO_URL.
+    Idempotente — si ya está, no hace nada."""
+    try:
+        r = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=str(_REPO_DIR), capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            return
+        subprocess.run(
+            ["git", "remote", "add", "origin", _REPO_URL],
+            cwd=str(_REPO_DIR), capture_output=True, timeout=5,
+        )
+    except Exception:
+        pass
+
+
 # Piso de rollback: SHA del primer commit que incluye la feature de auto-update.
 # Volver a un commit anterior a este dejaría al operador sin acceso a la UI de
 # actualización, atrapándolo en una versión vieja sin posibilidad de volver
@@ -1061,6 +1084,9 @@ def api_admin_version():
     """
     if not (_REPO_DIR / ".git").exists():
         raise HTTPException(500, "El directorio del proyecto no es un repo git.")
+
+    # Asegurar que existe el remote 'origin' (Render/Railway no lo preservan).
+    _ensure_origin_remote()
 
     # Fetch (puede fallar si no hay red — devolvemos info parcial en ese caso).
     fetch_error = None
@@ -1149,6 +1175,8 @@ def api_admin_update(background_tasks: BackgroundTasks):
     """
     if not (_REPO_DIR / ".git").exists():
         raise HTTPException(500, "El directorio del proyecto no es un repo git.")
+
+    _ensure_origin_remote()
 
     # 1. Seguridad: no aplicar si hay cambios locales sin commitear.
     if _git_safe("status", "--porcelain", "--untracked-files=no"):
