@@ -30,7 +30,7 @@ datalogger/
 ├── modbus_logger.py    # Polling Modbus FC03 + escritura en DB
 ├── tag_loader.py       # Carga de mapeo desde xlsx + overrides
 ├── modbus_simulator.py # Simulador PLC para pruebas locales
-├── Programa_TTA_IRSA_convertido v4.xlsx   # Semilla del mapeo (versionada)
+├── Programa_TTA_IRSA_convertido v5.xlsx   # Semilla del mapeo (versionada)
 ├── tags_active.xlsx    # Mapeo en uso (generado en runtime, no se versiona)
 └── xlsx_backups/       # Backups automáticos antes de cada upload/rollback
 ```
@@ -105,7 +105,7 @@ pip install -r requirements.txt
 
 ### 3. Verificar el mapeo del PLC
 
-Abrir `Programa_TTA_IRSA_convertido v4.xlsx`, hoja `Sheet2`. Cada fila debe tener:
+Abrir `Programa_TTA_IRSA_convertido v5.xlsx`, hoja `Sheet2`. Cada fila debe tener:
 - `Address` con la I/O física (`%I0.0`, `%Q3.5`, etc.)
 - `Flag HR` con el bit espejado (`%M200.0`, `%M211.5`, etc.)
 - `TYPE` = `INPUT` o `OUTPUT`

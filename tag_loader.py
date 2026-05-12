@@ -11,7 +11,7 @@ BACKUPS_DIR = "xlsx_backups"
 
 # Compat: si todavía no hicimos la migración a `tags_active.xlsx` y el
 # archivo original está en disco, lo renombramos in-place una vez.
-_LEGACY_XLSX = "Programa_TTA_IRSA_convertido v4.xlsx"
+_LEGACY_XLSX = "Programa_TTA_IRSA_convertido v5.xlsx"
 
 XLSX_SHEET = "Sheet2"
 
