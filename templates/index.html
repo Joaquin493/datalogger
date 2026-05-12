@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Datalogger V2</title>
+<title>Datalogger {{ version }}</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
@@ -13,7 +13,7 @@
 <header>
   <div class="logo">
     <div class="logo-dot"></div>
-    DATALOGGER <span class="logo-ver">V2</span>
+    DATALOGGER <span class="logo-ver">{{ version }}</span>
   </div>
   <div class="header-right">
     <div id="clock" aria-label="Hora actual"></div>
@@ -252,6 +252,67 @@
         <tbody id="sysev-body"></tbody>
       </table>
       <div id="sysev-empty" class="empty-state" hidden>Sin eventos del sistema</div>
+    </div>
+  </section>
+
+  <!-- Backups de la base de datos -->
+  <section class="sys-section">
+    <h3 class="sys-section-title">Backup de la base de datos</h3>
+    <div class="sys-hint">
+      Snapshots consistentes de <code>events.db</code> (gzip). Apretá <strong>⬇ Descargar ahora</strong> para llevarte una copia fresca al instante, o configurá la frecuencia automática debajo.
+    </div>
+    <div class="update-bar">
+      <div class="update-info">
+        <div><strong>Tamaño DB:</strong> <span id="db-bk-size" class="mono">—</span></div>
+        <div><strong>Backups guardados:</strong> <span id="db-bk-count" class="mono">—</span></div>
+        <div><strong>Último backup:</strong> <span id="db-bk-last">—</span></div>
+        <div><strong>Próximo automático:</strong> <span id="db-bk-next">—</span></div>
+      </div>
+      <div class="update-actions">
+        <a id="btn-db-bk-now" class="btn btn-primary" href="/api/db/backup/now" download>⬇ Descargar ahora</a>
+        <button type="button" class="btn" id="btn-db-bk-reload">↺ Refrescar</button>
+      </div>
+    </div>
+
+    <div class="update-bar db-bk-cfg-bar">
+      <div class="update-info">
+        <label class="filter-inline">
+          Frecuencia
+          <select id="db-bk-cfg-interval" class="select-filter" aria-label="Frecuencia del backup automático">
+            <option value="1">Cada hora</option>
+            <option value="6">Cada 6 horas</option>
+            <option value="12">Cada 12 horas</option>
+            <option value="24" selected>Diario</option>
+            <option value="48">Cada 2 días</option>
+            <option value="168">Semanal</option>
+          </select>
+        </label>
+        <label class="filter-inline">
+          Conservar últimos
+          <input type="number" id="db-bk-cfg-keep" class="select-filter num-input" min="1" max="100" value="14"
+                 aria-label="Cantidad de backups automáticos a conservar">
+        </label>
+        <span id="db-bk-cfg-msg" class="sys-msg-inline" hidden></span>
+      </div>
+      <div class="update-actions">
+        <button type="button" class="btn btn-primary" id="btn-db-bk-cfg-save" disabled>Guardar configuración</button>
+      </div>
+    </div>
+    <div class="table-wrap" id="db-bk-wrap">
+      <div class="loading-overlay" id="db-bk-loading" hidden><div class="spinner" aria-label="Cargando"></div></div>
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Tipo</th>
+            <th scope="col">Archivo</th>
+            <th scope="col">Fecha</th>
+            <th scope="col">Tamaño</th>
+            <th scope="col">Acciones</th>
+          </tr>
+        </thead>
+        <tbody id="db-bk-body"></tbody>
+      </table>
+      <div id="db-bk-empty" class="empty-state" hidden>Sin backups todavía — el primer auto se genera al día siguiente del arranque, o apretá <strong>Descargar ahora</strong>.</div>
     </div>
   </section>
 </div>

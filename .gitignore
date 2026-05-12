@@ -9,6 +9,7 @@ events_export.xlsx
 # El xlsx "semilla" (Programa_TTA_IRSA_convertido v4.xlsx) sí se versiona como base.
 tags_active.xlsx
 xlsx_backups/
+db_backups/
 
 # Logs (rotativos, generados en runtime)
 logs/

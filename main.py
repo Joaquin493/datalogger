@@ -1,8 +1,8 @@
 """FastAPI app del datalogger.
 
 Sirve la SPA estática (index.html / login.html) y expone los endpoints `/api/*`
-que consume el frontend portado del proyecto v2. Los endpoints adaptan la
-forma de los datos al schema que espera el JS de v2:
+que consume el frontend. Los endpoints adaptan la forma de los datos al
+schema que espera el JS:
 
   - /api/status     -> {link: {connected, last_error, last_cycle_ms}, events_total, max_events}
   - /api/variables  -> [{symbol, address, type, state, description}]    state ∈ {0,1,null}
@@ -17,6 +17,7 @@ comparar contra la DB.
 """
 
 import csv
+import gzip
 import io
 import logging
 import os
@@ -54,9 +55,15 @@ logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 logging.getLogger("pymodbus").setLevel(logging.WARNING)
 
-app = FastAPI(title="Datalogger V2", docs_url=None, redoc_url=None)
+# Única fuente de verdad de la versión visible. Se inyecta en los templates
+# Jinja como `{{ version }}` y se usa para el título de FastAPI. Para subir
+# de versión, cambiar SOLO esta línea.
+APP_VERSION = "v1.0"
+
+app = FastAPI(title=f"Datalogger {APP_VERSION}", docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+templates.env.globals["version"] = APP_VERSION
 
 # Tags cargados al arrancar y refrescables vía /api/tags/reload. Bajo lock
 # porque /api/variables y los endpoints de admin pueden mutar / leer en paralelo.
@@ -158,7 +165,7 @@ def _iso_to_db_ts(iso: str) -> Optional[str]:
 def _db_ts_to_iso(ts: Optional[str]) -> Optional[str]:
     """'2026-05-07 13:30:00.123' -> '2026-05-07T13:30:00.123' (ISO sin TZ).
 
-    El JS de v2 hace `new Date(iso)` y reformatea — basta con la T en el medio.
+    El JS hace `new Date(iso)` y reformatea — basta con la T en el medio.
     """
     if not ts:
         return None
@@ -275,7 +282,7 @@ def healthz():
 
 
 # ---------------------------------------------------------------------------
-# API — schema compatible con el frontend v2
+# API — schema consumido por la SPA
 # ---------------------------------------------------------------------------
 
 @app.get("/api/status", dependencies=[Depends(require_session)])
@@ -1616,3 +1623,289 @@ async def api_admin_rollback(request: Request, background_tasks: BackgroundTasks
         "deps_changed":  deps_changed,
         "restart_in_s":  1.5,
     }
+
+
+# ---------------------------------------------------------------------------
+# BACKUPS DE LA DB — accesible al operador desde la pestaña Sistema
+# ---------------------------------------------------------------------------
+#
+# Con WAL activo, copiar events.db con shutil.copy NO da un snapshot consistente
+# (el último estado vive en events.db-wal). Usamos la SQLite backup API, que
+# hace un copiado page-by-page atómico y NO bloquea writers del logger.
+#
+# Auto-daily en background + endpoint para snapshot manual al vuelo. Los dos
+# escriben en db_backups/ comprimidos con gzip (~4x menos que el .db crudo).
+
+_DB_PATH            = "events.db"
+_DB_BACKUPS_DIR     = _REPO_DIR / "db_backups"
+_DB_BACKUPS_KEEP_M  = 5    # manuales  (manual_*.db.gz) — cap para no llenar disco
+_DB_BACKUPS_NAME_RE = re.compile(r"^(events|manual)_\d{8}_\d{6}\.db\.gz$")
+
+# Defaults para la config persistida en DB (db_backup_config). Si el usuario
+# nunca cambió nada, vale esto.
+_DB_BACKUP_DEFAULT_INTERVAL_H = 24
+_DB_BACKUP_DEFAULT_KEEP       = 14
+_DB_BACKUP_MIN_INTERVAL_H     = 1     # límite duro para evitar configs absurdas
+_DB_BACKUP_MAX_INTERVAL_H     = 720   # 30 días
+_DB_BACKUP_MAX_KEEP           = 100
+
+# Event que despierta al thread de backup cuando la config cambia desde la UI.
+# Sin esto, el loop dormiría hasta el próximo ciclo viejo antes de leer la
+# config nueva — podrían pasar horas hasta que el cambio surta efecto.
+_backup_event = threading.Event()
+
+# Reusamos los handlers de logging que configuró modbus_logger — así los
+# mensajes de backup aparecen en el viewer del panel Configuración.
+_log_bk = logging.getLogger("plc_logger.main")
+
+
+def _load_backup_config() -> dict:
+    """Lee config persistida. Crea tabla + fila default en la primera llamada."""
+    conn = _db_connect_unrowed()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS db_backup_config (
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                interval_hours INTEGER NOT NULL,
+                keep_auto INTEGER NOT NULL,
+                updated_at TEXT
+            )
+        """)
+        conn.execute("""
+            INSERT OR IGNORE INTO db_backup_config(id, interval_hours, keep_auto, updated_at)
+            VALUES (1, ?, ?, ?)
+        """, (_DB_BACKUP_DEFAULT_INTERVAL_H, _DB_BACKUP_DEFAULT_KEEP, _now_ts()))
+        conn.commit()
+        row = conn.execute(
+            "SELECT interval_hours, keep_auto FROM db_backup_config WHERE id=1"
+        ).fetchone()
+    finally:
+        conn.close()
+    return {"interval_hours": int(row[0]), "keep_auto": int(row[1])}
+
+
+def _save_backup_config(interval_hours: int, keep_auto: int) -> None:
+    conn = _db_connect_unrowed()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS db_backup_config (
+                id INTEGER PRIMARY KEY CHECK(id=1),
+                interval_hours INTEGER NOT NULL,
+                keep_auto INTEGER NOT NULL,
+                updated_at TEXT
+            )
+        """)
+        conn.execute("""
+            INSERT INTO db_backup_config(id, interval_hours, keep_auto, updated_at)
+            VALUES (1, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                interval_hours = excluded.interval_hours,
+                keep_auto      = excluded.keep_auto,
+                updated_at     = excluded.updated_at
+        """, (interval_hours, keep_auto, _now_ts()))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _last_auto_backup_mtime() -> Optional[float]:
+    if not _DB_BACKUPS_DIR.is_dir():
+        return None
+    files = list(_DB_BACKUPS_DIR.glob("events_*.db.gz"))
+    if not files:
+        return None
+    return max(p.stat().st_mtime for p in files)
+
+
+def _snapshot_db_to(dest: Path) -> None:
+    """Snapshot consistente del events.db al path destino. Usa la backup API
+    de SQLite — atómica y no bloquea writers."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    src = sqlite3.connect(_DB_PATH)
+    dst = sqlite3.connect(str(dest))
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+
+
+def _gzip_file(src: Path, dest: Path) -> None:
+    with open(src, "rb") as fi, gzip.open(dest, "wb", compresslevel=6) as fo:
+        shutil.copyfileobj(fi, fo)
+
+
+def _make_backup(kind: str) -> Path:
+    """Crea un backup gzipped y devuelve el path final. kind ∈ {events, manual}."""
+    _DB_BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    tmp = _DB_BACKUPS_DIR / f"{kind}_{stamp}.db"
+    gz  = _DB_BACKUPS_DIR / f"{kind}_{stamp}.db.gz"
+    try:
+        _snapshot_db_to(tmp)
+        _gzip_file(tmp, gz)
+    finally:
+        if tmp.exists():
+            try: tmp.unlink()
+            except Exception: pass
+    return gz
+
+
+def _prune_backups(keep_auto: int) -> None:
+    """Aplica retención por tipo. keep_auto viene de la config; los manuales
+    siempre usan _DB_BACKUPS_KEEP_M (cap fijo, no queremos que el operador
+    se quede sin disco bajando manuales)."""
+    if not _DB_BACKUPS_DIR.is_dir():
+        return
+    for prefix, keep in (("events_", keep_auto), ("manual_", _DB_BACKUPS_KEEP_M)):
+        files = sorted(_DB_BACKUPS_DIR.glob(f"{prefix}*.db.gz"),
+                       key=lambda p: p.stat().st_mtime)
+        old = files[:-keep] if len(files) > keep else []
+        for p in old:
+            try: p.unlink()
+            except Exception: pass
+
+
+def _db_backup_loop():
+    """Daemon: aplica la config de backup vivo. Cada iteración:
+      1. Lee config de DB (interval_hours, keep_auto).
+      2. Si el último backup auto es más viejo que interval_hours, crea uno.
+      3. Espera hasta el próximo ciclo — o hasta que la UI cambie la config
+         (vía _backup_event), lo que pase primero. Así un cambio en la
+         frecuencia tiene efecto inmediato.
+    """
+    while True:
+        wait_s = 600  # fallback si algo explota antes de calcular
+        try:
+            cfg = _load_backup_config()
+            interval_s = cfg["interval_hours"] * 3600
+
+            last_mtime = _last_auto_backup_mtime()
+            now_t = time.time()
+            need = last_mtime is None or (now_t - last_mtime) >= interval_s
+
+            if need:
+                gz = _make_backup("events")
+                last_mtime = gz.stat().st_mtime
+                _prune_backups(cfg["keep_auto"])
+                _log_bk.info(f"DB backup automatico: {gz.name} "
+                             f"({gz.stat().st_size} bytes)")
+
+            # Cuánto falta para el siguiente. Mínimo 60s para evitar busy-loop
+            # si alguien pone interval=0 manualmente en la DB.
+            elapsed = time.time() - last_mtime
+            wait_s = max(60, interval_s - elapsed)
+        except Exception as e:
+            _log_bk.error(f"DB backup automatico fallo: {e}")
+
+        # Si _backup_event.set() lo despierta antes (cambio de config), wait
+        # devuelve True y re-evaluamos al toque.
+        if _backup_event.wait(timeout=wait_s):
+            _backup_event.clear()
+
+
+threading.Thread(target=_db_backup_loop, daemon=True).start()
+
+
+@app.get("/api/db/backups", dependencies=[Depends(require_session)])
+def api_db_backups():
+    """Lista de backups + info de la DB + config + cuánto falta para el
+    próximo auto. Sin gate de config — operador-accesible."""
+    cfg = _load_backup_config()
+    db_size = os.path.getsize(_DB_PATH) if os.path.exists(_DB_PATH) else 0
+    items = []
+    if _DB_BACKUPS_DIR.is_dir():
+        for p in sorted(_DB_BACKUPS_DIR.glob("*.db.gz"),
+                        key=lambda x: x.stat().st_mtime, reverse=True):
+            st = p.stat()
+            items.append({
+                "name":  p.name,
+                "size":  st.st_size,
+                "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%dT%H:%M:%S"),
+                "kind":  "manual" if p.name.startswith("manual_") else "auto",
+            })
+
+    last_auto = _last_auto_backup_mtime()
+    if last_auto is not None:
+        next_in = max(0, int(cfg["interval_hours"] * 3600 - (time.time() - last_auto)))
+    else:
+        next_in = 0  # se va a hacer en el próximo tick del loop
+
+    return {
+        "db_size":         db_size,
+        "db_exists":       os.path.exists(_DB_PATH),
+        "interval_hours":  cfg["interval_hours"],
+        "keep_auto":       cfg["keep_auto"],
+        "keep_manual":     _DB_BACKUPS_KEEP_M,
+        "next_in_seconds": next_in,
+        "items":           items,
+    }
+
+
+@app.get("/api/db/backup/config", dependencies=[Depends(require_session)])
+def api_db_backup_config_get():
+    cfg = _load_backup_config()
+    return {
+        **cfg,
+        "min_interval_hours": _DB_BACKUP_MIN_INTERVAL_H,
+        "max_interval_hours": _DB_BACKUP_MAX_INTERVAL_H,
+        "max_keep":           _DB_BACKUP_MAX_KEEP,
+    }
+
+
+@app.patch("/api/db/backup/config", dependencies=[Depends(require_session)])
+async def api_db_backup_config_set(request: Request):
+    body = await request.json()
+    try:
+        interval_hours = int(body.get("interval_hours"))
+        keep_auto = int(body.get("keep_auto"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "interval_hours y keep_auto son requeridos (enteros).")
+    if not (_DB_BACKUP_MIN_INTERVAL_H <= interval_hours <= _DB_BACKUP_MAX_INTERVAL_H):
+        raise HTTPException(400, f"interval_hours fuera de rango "
+                            f"({_DB_BACKUP_MIN_INTERVAL_H}..{_DB_BACKUP_MAX_INTERVAL_H}).")
+    if not (1 <= keep_auto <= _DB_BACKUP_MAX_KEEP):
+        raise HTTPException(400, f"keep_auto fuera de rango (1..{_DB_BACKUP_MAX_KEEP}).")
+
+    _save_backup_config(interval_hours, keep_auto)
+    # Despertar al thread para que aplique la frecuencia nueva sin esperar
+    # al próximo tick del intervalo anterior.
+    _backup_event.set()
+    _log_bk.info(f"DB backup config actualizada: cada {interval_hours}h, "
+                 f"conservar {keep_auto}")
+    # Aplicar retención nueva ya — si el operador bajó keep_auto, debería
+    # ver menos archivos en la lista al volver.
+    try:
+        _prune_backups(keep_auto)
+    except Exception:
+        pass
+    return {"ok": True, "interval_hours": interval_hours, "keep_auto": keep_auto}
+
+
+@app.get("/api/db/backup/now", dependencies=[Depends(require_session)])
+def api_db_backup_now():
+    """Snapshot al vuelo y lo devuelve como descarga. Queda guardado como
+    manual_* para que el operador pueda re-bajarlo después si hace falta."""
+    if not os.path.exists(_DB_PATH):
+        raise HTTPException(404, "No existe events.db todavía.")
+    try:
+        gz = _make_backup("manual")
+        cfg = _load_backup_config()
+        _prune_backups(cfg["keep_auto"])
+    except Exception as e:
+        _log_bk.error(f"DB backup manual fallo: {e}")
+        raise HTTPException(500, f"Backup fallo: {e}")
+    _log_bk.info(f"DB backup manual: {gz.name} ({gz.stat().st_size} bytes)")
+    return FileResponse(str(gz), media_type="application/gzip", filename=gz.name)
+
+
+@app.get("/api/db/backup/download/{name}", dependencies=[Depends(require_session)])
+def api_db_backup_download(name: str):
+    """Descarga un backup ya guardado. Valida el nombre con regex estricto
+    para evitar path traversal."""
+    if not _DB_BACKUPS_NAME_RE.match(name):
+        raise HTTPException(400, "Nombre inválido.")
+    p = _DB_BACKUPS_DIR / name
+    if not p.exists():
+        raise HTTPException(404, "Backup no encontrado.")
+    return FileResponse(str(p), media_type="application/gzip", filename=name)

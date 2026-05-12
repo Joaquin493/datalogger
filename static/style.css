@@ -1,5 +1,5 @@
 /* ==========================================================================
-   Datalogger V2 — estilos
+   Datalogger — estilos
 
    Convención de tokens:
      - Colores semánticos en :root para light; override en [data-theme="dark"].
@@ -368,6 +368,7 @@ a { color: inherit; text-decoration: none; }
   outline: none;
 }
 .date-input { font-family: var(--mono); font-size: 12px; }
+.num-input  { width: 70px; font-family: var(--mono); }
 
 /* ==========================================================================
    Grid de stats
@@ -1016,6 +1017,17 @@ tr.tag-overridden td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 #upd-status.ok   { color: var(--good); font-weight: 600; }
 #upd-status.warn { color: var(--warn); font-weight: 600; }
 #upd-status.bad  { color: var(--bad);  font-weight: 600; }
+
+/* Fila de configuración del backup automático — alineada visualmente al
+   update-bar de arriba pero con un fondo levemente más suave para indicar
+   que es controles, no info read-only. */
+.db-bk-cfg-bar { background: var(--bg3); }
+.sys-msg-inline {
+  font-size: 12px; padding: 2px 8px; border-radius: 4px;
+  align-self: center; line-height: 1.6;
+}
+.sys-msg-inline.ok   { background: rgba(10,160,110,.12); color: var(--good); }
+.sys-msg-inline.bad  { background: rgba(220,53,69,.12);  color: var(--bad);  }
 
 .update-pending {
   border: 1px solid var(--border);

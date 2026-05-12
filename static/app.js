@@ -1,4 +1,4 @@
-// Datalogger V2 — SPA vanilla JS.
+// Datalogger — SPA vanilla JS.
 //
 // Estructura (wire-up en init()):
 //   - tabs, header (reloj, status, tema)
@@ -139,7 +139,7 @@ function switchTab(name) {
   // Carga datos sólo al entrar al panel, y reconfigura el polling.
   if (name === 'events')    loadEvents();
   if (name === 'counts')    loadCounts();
-  if (name === 'sysevents') loadSysEvents();
+  if (name === 'sysevents') { loadSysEvents(); loadDbBackups(); }
   if (name === 'config')    enterConfigTab();
   reconfigureTimers();
 }
@@ -783,6 +783,111 @@ async function loadSysEvents() {
     empty.textContent = 'Error: ' + (e.message || 'fetch');
   } finally {
     setLoading('sys-loading', false);
+  }
+}
+
+// ---------- db backups (pestaña Sistema) ----------
+function fmtBytes(n) {
+  if (n == null) return '—';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function fmtCountdown(seconds) {
+  if (seconds == null || seconds <= 0) return 'ya';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h >= 24) {
+    const d = Math.floor(h / 24);
+    const rh = h % 24;
+    return rh > 0 ? `en ${d}d ${rh}h` : `en ${d}d`;
+  }
+  if (h > 0) return m > 0 ? `en ${h}h ${m}m` : `en ${h}h`;
+  return `en ${m}m`;
+}
+
+// Snapshot del último config aplicado — lo usamos para habilitar/deshabilitar
+// el botón "Guardar" según si hay cambios pendientes.
+const dbBkCfgState = { interval: 24, keep: 14 };
+
+async function loadDbBackups() {
+  if (!$('db-bk-body')) return;
+  setLoading('db-bk-loading', true);
+  try {
+    const { data } = await api('/api/db/backups');
+    $('db-bk-size').textContent  = fmtBytes(data.db_size);
+    $('db-bk-count').textContent = data.items.length;
+    $('db-bk-last').textContent  = data.items.length
+      ? (fmtRelative(data.items[0].mtime) || fmtDateTime(data.items[0].mtime))
+      : 'todavía no hay backups';
+    $('db-bk-next').textContent  = fmtCountdown(data.next_in_seconds);
+
+    // Sincronizar inputs de config con lo que vino del server.
+    dbBkCfgState.interval = data.interval_hours;
+    dbBkCfgState.keep     = data.keep_auto;
+    $('db-bk-cfg-interval').value = String(data.interval_hours);
+    $('db-bk-cfg-keep').value     = String(data.keep_auto);
+    updateDbBkCfgDirty();
+
+    const tb = $('db-bk-body');
+    const empty = $('db-bk-empty');
+    if (!data.items.length) {
+      tb.innerHTML = '';
+      empty.hidden = false;
+      return;
+    }
+    empty.hidden = true;
+    tb.innerHTML = data.items.map((b) => `
+      <tr>
+        <td><span class="sys-type ${b.kind === 'manual' ? 'CONNECT' : 'STARTUP'}">${esc(b.kind)}</span></td>
+        <td class="mono">${esc(b.name)}</td>
+        <td class="ts">${esc(fmtDateTime(b.mtime))}</td>
+        <td class="mono">${esc(fmtBytes(b.size))}</td>
+        <td><a class="btn btn-small" href="/api/db/backup/download/${encodeURIComponent(b.name)}" download>⬇ Descargar</a></td>
+      </tr>`).join('');
+  } catch (e) {
+    $('db-bk-body').innerHTML = '';
+    const empty = $('db-bk-empty');
+    empty.hidden = false;
+    empty.textContent = 'Error: ' + (e.message || 'fetch');
+  } finally {
+    setLoading('db-bk-loading', false);
+  }
+}
+
+function updateDbBkCfgDirty() {
+  const cur_i = parseInt($('db-bk-cfg-interval').value, 10);
+  const cur_k = parseInt($('db-bk-cfg-keep').value, 10);
+  const dirty = (cur_i !== dbBkCfgState.interval) || (cur_k !== dbBkCfgState.keep);
+  $('btn-db-bk-cfg-save').disabled = !dirty || isNaN(cur_i) || isNaN(cur_k);
+}
+
+async function saveDbBkConfig() {
+  const interval = parseInt($('db-bk-cfg-interval').value, 10);
+  const keep = parseInt($('db-bk-cfg-keep').value, 10);
+  const msg = $('db-bk-cfg-msg');
+  const btn = $('btn-db-bk-cfg-save');
+  btn.disabled = true;
+  msg.hidden = true;
+  try {
+    await apiMutate('/api/db/backup/config', {
+      method: 'PATCH',
+      json:   { interval_hours: interval, keep_auto: keep },
+    });
+    msg.className = 'sys-msg-inline ok';
+    msg.textContent = '✓ Guardado';
+    msg.hidden = false;
+    setTimeout(() => { msg.hidden = true; }, 2500);
+    // Refrescamos la lista para ver el nuevo "Próximo automático" y la
+    // retención aplicada (si bajamos keep, algunos archivos desaparecen).
+    loadDbBackups();
+  } catch (e) {
+    msg.className = 'sys-msg-inline bad';
+    msg.textContent = 'Error: ' + (e.message || 'fetch');
+    msg.hidden = false;
+    btn.disabled = false;
   }
 }
 
@@ -1560,6 +1665,17 @@ function wireEvents() {
 
   // Sys events
   $('btn-reload-sys').addEventListener('click', loadSysEvents);
+
+  // DB backups (pestaña Sistema)
+  $('btn-db-bk-reload').addEventListener('click', loadDbBackups);
+  // El "Descargar ahora" puede tardar unos segundos (snapshot SQLite). Refrescamos
+  // la lista poco después para que aparezca el nuevo manual_*.
+  $('btn-db-bk-now').addEventListener('click', () => {
+    setTimeout(loadDbBackups, 2500);
+  });
+  $('db-bk-cfg-interval').addEventListener('change', updateDbBkCfgDirty);
+  $('db-bk-cfg-keep').addEventListener('input', updateDbBkCfgDirty);
+  $('btn-db-bk-cfg-save').addEventListener('click', saveDbBkConfig);
 
   // Tags admin
   $('btn-reload-tags').addEventListener('click', loadTags);
